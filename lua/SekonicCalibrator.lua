@@ -2,8 +2,9 @@
 -- Lighttune - GrandMA3 Lua Plugin
 --
 -- Calibrate fixture groups using Sekonic C-7000 spectromaster measurements.
--- Inputs: CCT (Kelvin), Duv (Green-Magenta shift), CRI (Ra), R9
--- Output: Applies corrected chromaticity to the selected fixture group.
+-- Session goals: target Kelvin, CRI goal, R9 goal.
+-- Inner loop: re-measure the same group until the operator is happy.
+-- Outer loop: move to the next group.
 
 --------------------------------------------------------------------------------
 -- SECTION 1: CONSTANTS
@@ -22,8 +23,10 @@ local DUV_MAX =  0.02
 local CRI_MIN =  0
 local CRI_MAX =  100
 
-local DEFAULT_TARGET_CCT = 5600
-local DEFAULT_TARGET_DUV = 0.000
+-- Goal modes for CRI / R9
+local GOAL_MAX  = "max"   -- push as high as possible (informational)
+local GOAL_MIN  = "min"   -- must reach a specific minimum value
+local GOAL_SKIP = "skip"  -- not being tracked this session
 
 --------------------------------------------------------------------------------
 -- SECTION 2: COLOR MATH (pure functions, no MA3 API)
@@ -92,7 +95,6 @@ end
 -- Convert CIE 1931 xy chromaticity to normalised sRGB (0–1 each channel).
 -- Assumes Y = 1.0. Normalises so the brightest channel = 1 (preserves hue/sat).
 local function xy_to_rgb(x, y)
-    -- xy to XYZ (Y=1)
     if y == 0 then y = 0.0001 end
     local X = x / y
     local Y = 1.0
@@ -103,7 +105,6 @@ local function xy_to_rgb(x, y)
     local g_lin = -0.9692660 * X + 1.8760108 * Y + 0.0415560 * Z
     local b_lin =  0.0556434 * X - 0.2040259 * Y + 1.0572252 * Z
 
-    -- Clamp negatives
     r_lin = math.max(0, r_lin)
     g_lin = math.max(0, g_lin)
     b_lin = math.max(0, b_lin)
@@ -117,11 +118,7 @@ local function xy_to_rgb(x, y)
     end
 
     -- Gamma encode (sRGB approx: 2.2)
-    local r = r_lin ^ (1 / 2.2)
-    local g = g_lin ^ (1 / 2.2)
-    local b = b_lin ^ (1 / 2.2)
-
-    return r, g, b
+    return r_lin ^ (1 / 2.2), g_lin ^ (1 / 2.2), b_lin ^ (1 / 2.2)
 end
 
 -- Convert normalised RGB (0–1) to HSB: H (0–360), S (0–1), B (0–1).
@@ -129,15 +126,9 @@ local function rgb_to_hsb(r, g, b)
     local max_c = math.max(r, g, b)
     local min_c = math.min(r, g, b)
     local delta = max_c - min_c
-
-    local h, s, bri
-    bri = max_c
-
-    if max_c == 0 then
-        s = 0
-    else
-        s = delta / max_c
-    end
+    local bri   = max_c
+    local s     = (max_c == 0) and 0 or (delta / max_c)
+    local h
 
     if delta == 0 then
         h = 0
@@ -150,35 +141,41 @@ local function rgb_to_hsb(r, g, b)
     end
 
     if h < 0 then h = h + 360 end
-
     return h, s, bri
 end
 
--- Rate a quality metric against broadcast thresholds.
--- For DUV, pass math.abs(value) and use QUALITY.DUV thresholds.
+-- Rate a quality metric against broadcast thresholds (higher = better).
 local function rate_quality(value, thresholds)
-    if value >= thresholds.excellent then
-        return "Excellent"
-    elseif value >= thresholds.good then
-        return "Good"
-    elseif value >= thresholds.acceptable then
-        return "Acceptable"
-    else
-        return "Poor"
+    if value >= thresholds.excellent then return "Excellent"
+    elseif value >= thresholds.good   then return "Good"
+    elseif value >= thresholds.acceptable then return "Acceptable"
+    else return "Poor"
     end
 end
 
--- Rate Duv (uses inverted scale: lower absolute value = better).
+-- Rate Duv (inverted scale: lower absolute value = better).
 local function rate_duv(duv)
     local abs_duv = math.abs(duv)
-    if abs_duv <= QUALITY.DUV.excellent then
-        return "Excellent"
-    elseif abs_duv <= QUALITY.DUV.good then
-        return "Good"
-    elseif abs_duv <= QUALITY.DUV.acceptable then
-        return "Acceptable"
-    else
-        return "Poor"
+    if abs_duv <= QUALITY.DUV.excellent  then return "Excellent"
+    elseif abs_duv <= QUALITY.DUV.good   then return "Good"
+    elseif abs_duv <= QUALITY.DUV.acceptable then return "Acceptable"
+    else return "Poor"
+    end
+end
+
+-- Return a concise goal-status string for CRI or R9.
+-- goal: { mode = GOAL_MAX / GOAL_MIN / GOAL_SKIP, value = N (for GOAL_MIN) }
+local function goal_status_str(measured_val, goal)
+    if goal.mode == GOAL_SKIP then
+        return ""
+    elseif goal.mode == GOAL_MAX then
+        return "  [maximize]"
+    else  -- GOAL_MIN
+        if measured_val >= goal.value then
+            return string.format("  [GOAL MET \xe2\x89\xa5%d]", goal.value)
+        else
+            return string.format("  [BELOW GOAL – need %d, have %d]", goal.value, measured_val)
+        end
     end
 end
 
@@ -194,34 +191,15 @@ local function show_welcome(display)
         message        = "Lighttune – GrandMA3 Color Calibration\n\n"
                        .. "Calibrate fixture groups using measurements\n"
                        .. "from your Sekonic C-7000 spectromaster.\n\n"
-                       .. "You will enter:\n"
-                       .. "  • Target CCT (Kelvin) and Duv\n"
-                       .. "  • Measured CCT, Duv, CRI, and R9\n\n"
-                       .. "The plugin will apply the corrected chromaticity\n"
-                       .. "to the selected fixture group.",
+                       .. "Session goals are set once:\n"
+                       .. "  • Target Kelvin\n"
+                       .. "  • CRI and/or R9 goals\n\n"
+                       .. "Each group is re-measured until you are happy,\n"
+                       .. "then you move on to the next group.",
         display_handle = display,
         buttons        = { "Start", "Cancel" },
     })
     return result == 1
-end
-
--- Prompt for the group number/name to calibrate.
--- Returns the group string or nil on cancel.
-local function get_group_input(display)
-    for attempt = 1, 3 do
-        local prefix = attempt > 1 and "Invalid group. Please enter a number or name.\n\n" or ""
-        local result = MessageBox({
-            title          = "Select Fixture Group",
-            message        = prefix .. "Enter the group number or name to calibrate:\n(e.g.  1  or  Front Wash)",
-            display_handle = display,
-            input          = true,
-            buttons        = { "OK", "Cancel" },
-        })
-        if result == nil or result == 2 then return nil end
-        local val = tostring(result):match("^%s*(.-)%s*$")  -- trim whitespace
-        if val ~= "" then return val end
-    end
-    return nil
 end
 
 -- Prompt for a single numeric parameter with range validation.
@@ -249,15 +227,136 @@ local function get_number_input(display, title, message, min_val, max_val)
     return nil
 end
 
--- Collect target CCT and Duv from the operator.
--- Returns { cct, duv } or nil on cancel.
-local function get_target_params(display)
+-- Prompt for the mode and optional minimum for a single spectral metric.
+-- metric_name: "CRI (Ra)" or "R9", typical_min: broadcast reference value.
+-- Returns a goal table { mode, value } or nil on cancel.
+local function get_one_spectral_goal(display, metric_name, typical_min)
+    local mode_result = MessageBox({
+        title          = metric_name .. " Goal",
+        message        = string.format(
+            "Set the goal for %s.\n\n"
+            .. "  As high as possible – track quality, no hard floor\n"
+            .. "  Set minimum         – flag groups that fall below a value\n"
+            .. "  Skip                – not tracking %s this session",
+            metric_name, metric_name
+        ),
+        display_handle = display,
+        buttons        = { "As high as possible", "Set minimum", "Skip" },
+    })
+
+    if mode_result == nil then return nil end
+    if mode_result == 1   then return { mode = GOAL_MAX } end
+    if mode_result == 3   then return { mode = GOAL_SKIP } end
+
+    -- mode_result == 2: ask for the minimum value
+    local val = get_number_input(
+        display,
+        metric_name .. " Minimum",
+        string.format(
+            "Enter the minimum acceptable %s value.\n"
+            .. "Range: %d – %d\n\n"
+            .. "Broadcast standard: %d+",
+            metric_name, CRI_MIN, CRI_MAX, typical_min
+        ),
+        CRI_MIN, CRI_MAX
+    )
+    if not val then return nil end
+    return { mode = GOAL_MIN, value = val }
+end
+
+-- Collect all session goals once at the start.
+-- Target Duv is fixed at 0.000 (Planckian locus neutral) – not user-configurable.
+-- Returns { cct, duv, cri, r9 } or nil on cancel.
+-- cri / r9 are goal tables: { mode = GOAL_MAX/MIN/SKIP, value = N }
+local function get_session_goals(display)
+    -- Target Kelvin
     local cct = get_number_input(
         display,
         "Target Color Temperature",
         string.format(
-            "Enter the target CCT in Kelvin.\nRange: %d – %d\n\n"
-            .. "Common values:\n  3200K  Tungsten / Warm\n  4300K  Fluorescent\n  5600K  Daylight\n  6500K  Overcast",
+            "Enter the target CCT in Kelvin for this session.\n"
+            .. "Range: %d – %d\n\n"
+            .. "Common values:\n"
+            .. "  3200K  Tungsten / Warm\n"
+            .. "  4300K  Fluorescent\n"
+            .. "  5600K  Daylight\n"
+            .. "  6500K  Overcast",
+            CCT_MIN, CCT_MAX
+        ),
+        CCT_MIN, CCT_MAX
+    )
+    if not cct then return nil end
+
+    -- Duv is always targeted at 0.000 (neutral, on Planckian locus).
+    -- The measured Duv is still entered per-reading so the correction math works.
+    local duv = 0.000
+
+    -- ── Spectral goal selection ───────────────────────────────────────────
+    -- Ask which metrics to track, with a "both" shortcut.
+    local spectral_choice = MessageBox({
+        title          = "Spectral Goals",
+        message        = "Which colour quality metrics do you want to track?\n\n"
+                       .. "  CRI (Ra)      – General colour rendering index\n"
+                       .. "  R9            – Deep red rendering (skin tones)\n"
+                       .. "  Both          – Track CRI and R9\n"
+                       .. "  Skip          – Quality metrics not tracked",
+        display_handle = display,
+        buttons        = { "CRI only", "R9 only", "Both", "Skip" },
+    })
+    if spectral_choice == nil then return nil end
+
+    local track_cri = (spectral_choice == 1 or spectral_choice == 3)
+    local track_r9  = (spectral_choice == 2 or spectral_choice == 3)
+
+    local cri_goal, r9_goal
+
+    if track_cri then
+        cri_goal = get_one_spectral_goal(display, "CRI (Ra)", 90)
+        if not cri_goal then return nil end
+    else
+        cri_goal = { mode = GOAL_SKIP }
+    end
+
+    if track_r9 then
+        r9_goal = get_one_spectral_goal(display, "R9", 80)
+        if not r9_goal then return nil end
+    else
+        r9_goal = { mode = GOAL_SKIP }
+    end
+
+    return { cct = cct, duv = duv, cri = cri_goal, r9 = r9_goal }
+end
+
+-- Prompt for the group number/name to calibrate.
+-- Returns the group string or nil on cancel.
+local function get_group_input(display)
+    for attempt = 1, 3 do
+        local prefix = attempt > 1 and "Invalid input. Please enter a number or name.\n\n" or ""
+        local result = MessageBox({
+            title          = "Select Fixture Group",
+            message        = prefix .. "Enter the group number or name to calibrate:\n(e.g.  1  or  Front Wash)",
+            display_handle = display,
+            input          = true,
+            buttons        = { "OK", "Cancel" },
+        })
+        if result == nil or result == 2 then return nil end
+        local val = tostring(result):match("^%s*(.-)%s*$")
+        if val ~= "" then return val end
+    end
+    return nil
+end
+
+-- Collect measured CCT, Duv, CRI (Ra), and R9 from the Sekonic C-7000 readout.
+-- Returns { cct, duv, cri, r9 } or nil on cancel.
+local function get_measurement_params(display, attempt)
+    local title_suffix = attempt > 1 and string.format(" (attempt %d)", attempt) or ""
+
+    local cct = get_number_input(
+        display,
+        "Measured CCT" .. title_suffix,
+        string.format(
+            "Enter the CCT reading from your Sekonic C-7000.\n"
+            .. "Range: %d – %d K",
             CCT_MIN, CCT_MAX
         ),
         CCT_MIN, CCT_MAX
@@ -266,39 +365,11 @@ local function get_target_params(display)
 
     local duv = get_number_input(
         display,
-        "Target Duv (Green-Magenta)",
+        "Measured Duv" .. title_suffix,
         string.format(
-            "Enter the target Duv deviation.\nRange: %g to %+g\n\n"
-            .. " 0.000 = on Planckian locus (neutral)\n"
-            .. "+value = green shift\n"
-            .. "-value = magenta shift\n\n"
-            .. "Typical broadcast target: 0.000",
-            DUV_MIN, DUV_MAX
-        ),
-        DUV_MIN, DUV_MAX
-    )
-    if not duv then return nil end
-
-    return { cct = cct, duv = duv }
-end
-
--- Collect measured CCT, Duv, CRI (Ra), and R9 from the Sekonic C-7000 readout.
--- Returns { cct, duv, cri, r9 } or nil on cancel.
-local function get_measurement_params(display)
-    local cct = get_number_input(
-        display,
-        "Measured CCT (Sekonic C-7000)",
-        string.format("Enter the CCT reading from your Sekonic C-7000.\nRange: %d – %d K", CCT_MIN, CCT_MAX),
-        CCT_MIN, CCT_MAX
-    )
-    if not cct then return nil end
-
-    local duv = get_number_input(
-        display,
-        "Measured Duv / Green-Magenta (Sekonic C-7000)",
-        string.format(
-            "Enter the Duv (Δuv) reading from your Sekonic C-7000.\nRange: %g to %+g\n\n"
-            .. "Shown as 'Deviation' or 'Δuv' on the meter.\n"
+            "Enter the Duv (\xce\x94uv) reading from your Sekonic C-7000.\n"
+            .. "Range: %g to %+g\n\n"
+            .. "Shown as 'Deviation' or '\xce\x94uv' on the meter.\n"
             .. "+value = green  |  -value = magenta",
             DUV_MIN, DUV_MAX
         ),
@@ -308,10 +379,10 @@ local function get_measurement_params(display)
 
     local cri = get_number_input(
         display,
-        "Measured CRI Ra (Sekonic C-7000)",
+        "Measured CRI (Ra)" .. title_suffix,
         string.format(
-            "Enter the CRI (Ra) reading from your Sekonic C-7000.\nRange: %d – %d\n\n"
-            .. "Broadcast standard: 90+ (95+ recommended)",
+            "Enter the CRI (Ra) reading from your Sekonic C-7000.\n"
+            .. "Range: %d – %d",
             CRI_MIN, CRI_MAX
         ),
         CRI_MIN, CRI_MAX
@@ -320,12 +391,12 @@ local function get_measurement_params(display)
 
     local r9 = get_number_input(
         display,
-        "Measured R9 (Sekonic C-7000)",
+        "Measured R9" .. title_suffix,
         string.format(
-            "Enter the R9 (deep red) reading from your Sekonic C-7000.\nRange: %d – %d\n\n"
-            .. "R9 measures saturated red reproduction – critical for\n"
-            .. "skin tones and costumes on camera.\n"
-            .. "Broadcast standard: 80+ (90+ recommended)",
+            "Enter the R9 (deep red) reading from your Sekonic C-7000.\n"
+            .. "Range: %d – %d\n\n"
+            .. "R9 measures saturated red reproduction –\n"
+            .. "critical for skin tones and costumes on camera.",
             CRI_MIN, CRI_MAX
         ),
         CRI_MIN, CRI_MAX
@@ -335,14 +406,44 @@ local function get_measurement_params(display)
     return { cct = cct, duv = duv, cri = cri, r9 = r9 }
 end
 
+-- Build a goals summary line for the assessment header.
+local function goals_summary_line(goals)
+    local cri_str
+    if goals.cri.mode == GOAL_MAX then
+        cri_str = "maximize"
+    elseif goals.cri.mode == GOAL_MIN then
+        cri_str = string.format("\xe2\x89\xa5%d", goals.cri.value)
+    else
+        cri_str = "skipped"
+    end
+
+    local r9_str
+    if goals.r9.mode == GOAL_MAX then
+        r9_str = "maximize"
+    elseif goals.r9.mode == GOAL_MIN then
+        r9_str = string.format("\xe2\xa9\xbe%d", goals.r9.value)
+    else
+        r9_str = "skipped"
+    end
+
+    return string.format(
+        "Goals: %dK  CRI:%s  R9:%s",
+        goals.cct, cri_str, r9_str
+    )
+end
+
 -- Show the quality assessment and correction summary.
--- Returns true if the operator confirms to apply, false to skip.
-local function show_assessment(display, group, target, measured, correction)
+-- Buttons: [Apply] [Skip]
+-- Returns true = apply correction, false = skip (but continue loop).
+local function show_assessment(display, group, goals, measured, correction, attempt)
     local cri_rating = rate_quality(measured.cri, QUALITY.CRI)
     local r9_rating  = rate_quality(measured.r9,  QUALITY.R9)
     local duv_rating = rate_duv(measured.duv)
 
-    -- CRI/R9 broadcast warnings
+    local cri_goal_str = goal_status_str(measured.cri, goals.cri)
+    local r9_goal_str  = goal_status_str(measured.r9,  goals.r9)
+
+    -- Broadcast warnings
     local warnings = ""
     if measured.cri < QUALITY.CRI.acceptable then
         warnings = warnings .. "  WARNING: CRI below broadcast minimum (80)\n"
@@ -352,8 +453,7 @@ local function show_assessment(display, group, target, measured, correction)
         warnings = warnings .. "           Reds may appear dull on camera\n"
     end
     if math.abs(measured.duv) > QUALITY.DUV.acceptable then
-        warnings = warnings .. "  WARNING: Duv deviation exceeds 0.010\n"
-        warnings = warnings .. "           Strong green/magenta cast present\n"
+        warnings = warnings .. "  WARNING: Strong green/magenta cast (|Duv| > 0.010)\n"
     end
     if warnings ~= "" then
         warnings = "\n" .. warnings
@@ -365,7 +465,7 @@ local function show_assessment(display, group, target, measured, correction)
     elseif correction.delta_cct < 0 then
         delta_cct_str = string.format("%dK", correction.delta_cct)
     else
-        delta_cct_str = "0K (no change)"
+        delta_cct_str = "0K (on target)"
     end
 
     local delta_duv_str
@@ -374,35 +474,38 @@ local function show_assessment(display, group, target, measured, correction)
     elseif correction.delta_duv < 0 then
         delta_duv_str = string.format("%.4f", correction.delta_duv)
     else
-        delta_duv_str = "0.000 (no change)"
+        delta_duv_str = "0.000 (on target)"
     end
 
     local msg = string.format(
-        "== Quality Assessment (Group: %s) ==\n\n"
-     .. "  CRI (Ra) :  %3d  \xe2\x86\x92  %s\n"
-     .. "  R9       :  %3d  \xe2\x86\x92  %s\n"
-     .. "  Duv      : %+.4f  \xe2\x86\x92  %s\n"
+        "Group: %s  |  Attempt %d\n"
+     .. "%s\n\n"
+     .. "== Quality ==\n\n"
+     .. "  CRI (Ra) :  %3d  \xe2\x86\x92  %-11s%s\n"
+     .. "  R9       :  %3d  \xe2\x86\x92  %-11s%s\n"
+     .. "  Duv      : %+.4f  \xe2\x86\x92  %-11s\n"
      .. "%s\n"
-     .. "== Color Correction ==\n\n"
+     .. "== Correction ==\n\n"
      .. "  Measured :  %dK  Duv %+.4f\n"
      .. "  Target   :  %dK  Duv %+.4f\n"
      .. "  \xce\x94 Kelvin  :  %s\n"
      .. "  \xce\x94 Duv     :  %s\n\n"
-     .. "Apply color correction to Group %s?",
-        group,
-        measured.cri,  cri_rating,
-        measured.r9,   r9_rating,
-        measured.duv,  duv_rating,
+     .. "Apply chromaticity correction to Group %s?",
+        group, attempt,
+        goals_summary_line(goals),
+        measured.cri, cri_rating, cri_goal_str,
+        measured.r9,  r9_rating,  r9_goal_str,
+        measured.duv, duv_rating,
         warnings,
         measured.cct, measured.duv,
-        target.cct,   target.duv,
+        goals.cct,    goals.duv,
         delta_cct_str,
         delta_duv_str,
         group
     )
 
     local result = MessageBox({
-        title          = "Assessment & Correction",
+        title          = string.format("Assessment – Group %s (attempt %d)", group, attempt),
         message        = msg,
         display_handle = display,
         buttons        = { "Apply", "Skip" },
@@ -410,14 +513,16 @@ local function show_assessment(display, group, target, measured, correction)
     return result == 1
 end
 
--- Show the result of a calibration attempt.
+-- Show the result of a calibration apply.
 local function show_result(display, success, group, method, err_msg)
     if success then
         MessageBox({
-            title          = "Calibration Applied",
+            title          = "Correction Applied",
             message        = string.format(
-                "Color correction applied to Group %s.\n\nMethod: %s\n\n"
-                .. "Check the programmer view to confirm the update.",
+                "Chromaticity correction applied to Group %s.\n\n"
+                .. "Method: %s\n\n"
+                .. "Re-measure the group with your Sekonic C-7000\n"
+                .. "to confirm the result.",
                 group, method
             ),
             display_handle = display,
@@ -425,9 +530,10 @@ local function show_result(display, success, group, method, err_msg)
         })
     else
         MessageBox({
-            title          = "Calibration Failed",
+            title          = "Apply Failed",
             message        = string.format(
-                "Could not apply correction to Group %s.\n\nError: %s\n\n"
+                "Could not apply correction to Group %s.\n\n"
+                .. "Error: %s\n\n"
                 .. "Check that the group exists and fixtures are patched.",
                 group, tostring(err_msg)
             ),
@@ -437,13 +543,31 @@ local function show_result(display, success, group, method, err_msg)
     end
 end
 
+-- Ask whether the operator is done with the current group.
+-- Returns true = move to next group, false = measure again.
+local function ask_group_done(display, group, attempt)
+    local result = MessageBox({
+        title          = string.format("Group %s – Done?", group),
+        message        = string.format(
+            "Group: %s  |  Attempt %d\n\n"
+            .. "Are you happy with this group?\n\n"
+            .. "  Done          – mark group complete and move on\n"
+            .. "  Measure Again – re-take a Sekonic reading for this group",
+            group, attempt
+        ),
+        display_handle = display,
+        buttons        = { "Done", "Measure Again" },
+    })
+    return result == 1
+end
+
 -- Ask whether to calibrate another group.
 local function ask_calibrate_another(display)
     local result = MessageBox({
-        title          = "Continue?",
+        title          = "Next Group?",
         message        = "Calibrate another fixture group?",
         display_handle = display,
-        buttons        = { "Yes", "No" },
+        buttons        = { "Yes", "No – Finish" },
     })
     return result == 1
 end
@@ -455,16 +579,11 @@ end
 -- Select a fixture group on the console.
 -- Returns success (bool), error_message (string or nil).
 local function select_group(group)
-    -- Quote the group name to handle names with spaces.
     local cmd = 'Group "' .. tostring(group) .. '"'
-    local ok, err = pcall(function()
-        Cmd(cmd)
-    end)
+    local ok, err = pcall(function() Cmd(cmd) end)
     if not ok then
         -- Try without quotes (numeric IDs may not need them on all versions)
-        local ok2, err2 = pcall(function()
-            Cmd("Group " .. tostring(group))
-        end)
+        local ok2, err2 = pcall(function() Cmd("Group " .. tostring(group)) end)
         if not ok2 then
             return false, tostring(err2)
         end
@@ -476,13 +595,10 @@ end
 -- Returns success (bool), error_message (string or nil).
 local function apply_color_xyY(x, y)
     local ok, err = pcall(function()
-        -- x, y: CIE 1931 chromaticity; Y=1.0 (luminance, brightness controlled separately)
-        -- brightness=1.0, quality=1.0, const_brightness=false
+        -- x, y: CIE 1931 chromaticity; Y=1.0 (brightness controlled separately)
         SetColor("xyY", x, y, 1.0, 1.0, 1.0, false)
     end)
-    if not ok then
-        return false, tostring(err)
-    end
+    if not ok then return false, tostring(err) end
     return true, nil
 end
 
@@ -492,12 +608,9 @@ local function apply_color_hsb(x, y)
     local r, g, b = xy_to_rgb(x, y)
     local h, s, _ = rgb_to_hsb(r, g, b)
     local ok, err = pcall(function()
-        -- Brightness passed as 1.0 – operator controls fixture intensity independently.
         SetColor("HSB", h, s, 1.0, 1.0, 1.0, false)
     end)
-    if not ok then
-        return false, tostring(err)
-    end
+    if not ok then return false, tostring(err) end
     return true, nil
 end
 
@@ -515,7 +628,6 @@ local function calibrate_group(group, x, y)
         return { success = true, method = "xyY (precision)", error_msg = nil }
     end
 
-    -- xyY failed – try HSB fallback
     local hsb_ok, hsb_err = apply_color_hsb(x, y)
     if hsb_ok then
         return { success = true, method = "HSB (approx)", error_msg = nil }
@@ -534,40 +646,58 @@ end
 
 local function main(display, ...)
     local ok, err = pcall(function()
+
+        -- ── Welcome ──────────────────────────────────────────────────────────
         if not show_welcome(display) then return end
 
+        -- ── Session goals (set once for all groups) ───────────────────────
+        local goals = get_session_goals(display)
+        if not goals then return end
+
+        -- ── Outer loop: group by group ────────────────────────────────────
         repeat
-            -- Step 1: Which group?
             local group = get_group_input(display)
             if not group then break end
 
-            -- Step 2: What are the target values?
-            local target = get_target_params(display)
-            if not target then break end
+            local attempt = 0
 
-            -- Step 3: What did the Sekonic measure?
-            local measured = get_measurement_params(display)
-            if not measured then break end
+            -- ── Inner loop: re-measure same group until happy ─────────────
+            repeat
+                attempt = attempt + 1
 
-            -- Step 4: Compute correction and show assessment
-            local correction = get_correction(
-                target.cct, target.duv,
-                measured.cct, measured.duv
-            )
+                local measured = get_measurement_params(display, attempt)
+                if not measured then
+                    -- Operator cancelled mid-measurement → treat as done with group
+                    break
+                end
 
-            local apply = show_assessment(display, group, target, measured, correction)
-
-            -- Step 5: Apply (or skip)
-            if apply then
-                local result = calibrate_group(
-                    group,
-                    correction.target_x,
-                    correction.target_y
+                local correction = get_correction(
+                    goals.cct, goals.duv,
+                    measured.cct, measured.duv
                 )
-                show_result(display, result.success, group, result.method, result.error_msg)
-            end
+
+                local apply = show_assessment(
+                    display, group, goals, measured, correction, attempt
+                )
+
+                if apply then
+                    local result = calibrate_group(
+                        group,
+                        correction.target_x,
+                        correction.target_y
+                    )
+                    show_result(
+                        display, result.success, group,
+                        result.method, result.error_msg
+                    )
+                end
+
+            until ask_group_done(display, group, attempt)
+            -- ─────────────────────────────────────────────────────────────
 
         until not ask_calibrate_another(display)
+        -- ─────────────────────────────────────────────────────────────────
+
     end)
 
     if not ok then
