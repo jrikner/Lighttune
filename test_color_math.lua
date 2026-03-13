@@ -112,10 +112,53 @@ local function rgb_to_hsb(r, g, b)
 end
 
 local QUALITY = {
-    CRI = { excellent = 95, good = 90, acceptable = 80 },
-    R9  = { excellent = 90, good = 80, acceptable = 50 },
-    DUV = { excellent = 0.003, good = 0.006, acceptable = 0.010 },
+    CRI  = { excellent = 95, good = 90, acceptable = 80 },
+    R9   = { excellent = 90, good = 80, acceptable = 50 },
+    TLCI = { excellent = 90, good = 75, acceptable = 50 },
+    DUV  = { excellent = 0.003, good = 0.006, acceptable = 0.010 },
 }
+
+local GEL_STEPS = {
+    { threshold = 0.016, amount = "Full" },
+    { threshold = 0.010, amount = "1/2"  },
+    { threshold = 0.006, amount = "1/4"  },
+    { threshold = 0.003, amount = "1/8"  },
+}
+
+local function gel_hint(duv)
+    local abs_duv = math.abs(duv)
+    local amount  = nil
+    for _, step in ipairs(GEL_STEPS) do
+        if abs_duv > step.threshold then
+            amount = step.amount
+            break
+        end
+    end
+    if not amount then return nil end
+    if duv > 0 then
+        return string.format("%s Minus Green  (Duv %+.4f, green shift)", amount, duv)
+    else
+        return string.format("%s Plus Green   (Duv %+.4f, magenta shift)", amount, duv)
+    end
+end
+
+local B64_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+local function base64_encode(data)
+    local result = {}
+    for i = 1, #data, 3 do
+        local a = data:byte(i)     or 0
+        local b = data:byte(i + 1) or 0
+        local c = data:byte(i + 2) or 0
+        local n = (a << 16) | (b << 8) | c
+        result[#result + 1] = B64_CHARS:sub(((n >> 18) & 63) + 1, ((n >> 18) & 63) + 1)
+        result[#result + 1] = B64_CHARS:sub(((n >> 12) & 63) + 1, ((n >> 12) & 63) + 1)
+        result[#result + 1] = B64_CHARS:sub(((n >> 6)  & 63) + 1, ((n >> 6)  & 63) + 1)
+        result[#result + 1] = B64_CHARS:sub(( n        & 63) + 1, ( n        & 63) + 1)
+    end
+    local encoded = table.concat(result)
+    local pad = (3 - #data % 3) % 3
+    return encoded:sub(1, #encoded - pad) .. ("="):rep(pad)
+end
 
 local function rate_quality(value, thresholds)
     if value >= thresholds.excellent then return "Excellent"
@@ -302,6 +345,73 @@ assert_equal("Duv 0.010 = Acceptable", rate_duv(0.010),  "Acceptable")
 assert_equal("Duv 0.011 = Poor",       rate_duv(0.011),  "Poor")
 assert_equal("Duv -0.004 = Good",      rate_duv(-0.004), "Good")
 assert_equal("Duv -0.011 = Poor",      rate_duv(-0.011), "Poor")
+
+section("rate_quality – TLCI thresholds")
+assert_equal("TLCI  90 = Excellent",  rate_quality(90, QUALITY.TLCI), "Excellent")
+assert_equal("TLCI  89 = Good",       rate_quality(89, QUALITY.TLCI), "Good")
+assert_equal("TLCI  75 = Good",       rate_quality(75, QUALITY.TLCI), "Good")
+assert_equal("TLCI  74 = Acceptable", rate_quality(74, QUALITY.TLCI), "Acceptable")
+assert_equal("TLCI  50 = Acceptable", rate_quality(50, QUALITY.TLCI), "Acceptable")
+assert_equal("TLCI  49 = Poor",       rate_quality(49, QUALITY.TLCI), "Poor")
+assert_equal("TLCI   0 = Poor",       rate_quality(0,  QUALITY.TLCI), "Poor")
+
+section("gel_hint – direction and amount")
+
+-- No hint needed when on-target
+assert_equal("Duv  0.000 = nil",     gel_hint( 0.000), nil)
+assert_equal("Duv +0.002 = nil",     gel_hint( 0.002), nil)
+assert_equal("Duv -0.002 = nil",     gel_hint(-0.002), nil)
+-- Boundary: exactly at threshold → no hint (must be strictly greater)
+assert_equal("Duv +0.003 = nil",     gel_hint( 0.003), nil)
+
+-- 1/8 filter range
+do
+    local h = gel_hint(0.004)
+    assert_equal("Duv +0.004 starts with 1/8 Minus", h and h:sub(1, 11) or nil, "1/8 Minus G")
+end
+do
+    local h = gel_hint(-0.004)
+    assert_equal("Duv -0.004 starts with 1/8 Plus",  h and h:sub(1, 10) or nil, "1/8 Plus G")
+end
+
+-- At exactly 0.006: not strictly greater than 0.006 (1/4 step),
+-- falls through to the 0.003 step → returns 1/8
+do
+    local h = gel_hint(0.006)
+    assert_equal("Duv +0.006 = 1/8 (at 1/4 boundary)", h and h:sub(1, 11) or nil, "1/8 Minus G")
+end
+do
+    local h = gel_hint(0.007)
+    assert_equal("Duv +0.007 = 1/4 Minus Green", h and h:sub(1, 11) or nil, "1/4 Minus G")
+end
+
+-- 1/2 filter range
+do
+    local h = gel_hint(0.012)
+    assert_equal("Duv +0.012 = 1/2 Minus Green", h and h:sub(1, 11) or nil, "1/2 Minus G")
+end
+do
+    local h = gel_hint(-0.012)
+    assert_equal("Duv -0.012 = 1/2 Plus Green",  h and h:sub(1, 10) or nil, "1/2 Plus G")
+end
+
+-- Full filter range
+do
+    local h = gel_hint(0.020)
+    assert_equal("Duv +0.020 = Full Minus Green", h and h:sub(1, 12) or nil, "Full Minus G")
+end
+do
+    local h = gel_hint(-0.020)
+    assert_equal("Duv -0.020 = Full Plus Green",  h and h:sub(1, 11) or nil, "Full Plus G")
+end
+
+section("base64_encode – known vectors")
+-- RFC 4648 test vectors
+assert_equal("base64 ''",       base64_encode(""),       "")
+assert_equal("base64 'f'",      base64_encode("f"),      "Zg==")
+assert_equal("base64 'fo'",     base64_encode("fo"),     "Zm8=")
+assert_equal("base64 'foo'",    base64_encode("foo"),    "Zm9v")
+assert_equal("base64 'foobar'", base64_encode("foobar"), "Zm9vYmFy")
 
 --------------------------------------------------------------------------------
 -- Summary

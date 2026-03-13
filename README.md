@@ -1,6 +1,6 @@
 # SekonicCalibrator
 
-**Lighttune v0.1 — GrandMA3 Lua Plugin**
+**Lighttune v0.2 — GrandMA3 Lua Plugin**
 
 Calibrate fixture groups on your GrandMA3 console using measurements from a
 **Sekonic C-7000 spectromaster**. Designed for TV and broadcast productions
@@ -12,16 +12,31 @@ where colour accuracy and consistency across groups is critical.
 
 The plugin walks you through a measurement-driven calibration workflow:
 
-1. Select a fixture group
-2. Enter your **target** colour temperature (Kelvin) and Duv
-3. Enter the **measured** values from your Sekonic C-7000: CCT, Duv, CRI, R9
-4. Review the quality assessment and calculated correction
-5. Apply — the plugin sets the corrected chromaticity directly on the group
-6. Repeat for the next group
+1. Set session goals once: target Kelvin, CRI / R9 / TLCI goals, calibration mode
+2. Select a fixture group and enter its fixture make/model
+3. Enter Sekonic C-7000 readings (CCT, Duv, CRI, R9, TLCI)
+4. Review the quality assessment, correction, and physical hints
+5. Apply — the plugin sets the corrected chromaticity on the group
+6. Re-measure and repeat until happy with the group
+7. Move to the next group
+8. End-of-session summary shows all groups and goal pass/fail
 
-The colour correction is applied as a precise CIE 1931 xyY chromaticity value
-using GrandMA3's `SetColor` API. Fixtures that do not support xyY fall back
-automatically to an HSB approximation.
+Measurements are saved locally and optionally uploaded to a community fixture
+database on GitHub for future reference.
+
+---
+
+## Features
+
+| Feature | Description |
+|---|---|
+| **Two calibration modes** | Calibrate all groups to a set Kelvin target, or measure a reference group first and match everything else to it |
+| **CRI / R9 / TLCI goals** | Track each metric individually — set a minimum threshold or "as high as possible" |
+| **Gel correction hints** | When Duv is off, the assessment suggests the correct filter (1/8 → Full Plus/Minus Green) |
+| **Advanced Duv target** | Default 0.000 (neutral); optional custom Duv target for special production requirements |
+| **Per-group inner loop** | Re-measure and re-apply as many times as needed before moving to the next group |
+| **Session summary** | End-of-session table listing every group, its readings, Δ Kelvin, and goal pass/fail |
+| **Fixture logging** | Every calibrated group is logged locally and optionally uploaded to GitHub |
 
 ---
 
@@ -30,14 +45,13 @@ automatically to an HSB approximation.
 - GrandMA3 console (software v1.6 or later recommended)
 - Sekonic C-7000 spectromaster
 - Fixture groups configured in your showfile
-- Lua 5.4 (bundled with GrandMA3)
+- `curl` available on the console OS (required for community upload only)
 
 ---
 
 ## Installation
 
-1. Copy the entire `SekonicCalibrator/` folder into the GrandMA3 plugin
-   library on your console or show computer:
+1. Copy the entire `SekonicCalibrator/` folder into the GrandMA3 plugin library:
 
    **Windows:**
    ```
@@ -49,133 +63,152 @@ automatically to an HSB approximation.
    ~/MALightingTechnology/gma3_library/datapools/plugins/SekonicCalibrator/
    ```
 
-2. On the GrandMA3 console, open the **Plugin Pool**:
-   `Menu → Pools → Plugin`
+2. In GrandMA3: `Menu → Plugin Pool → Import → SekonicCalibrator`
 
-3. Press **Import** and select `SekonicCalibrator`.
+3. Assign to a macro key or executor, then run by double-tapping the plugin entry.
 
-4. The plugin will appear in the Plugin Pool. Assign it to a macro key or
-   executor for quick access.
+---
 
-5. To run: double-tap the plugin entry in the Plugin Pool, or execute via a
-   macro with `Plugin "SekonicCalibrator"`.
+## Calibration Modes
+
+### Calibrate to Target
+Standard mode. Set a target Kelvin (e.g., 5600K) and optionally a target Duv
+(default 0.000). Every group is corrected to this fixed target.
+
+### Match to Reference Group
+Use when you have one fixture group that defines the "correct" look — for
+example, existing HMIs or a fixed key light that can't be adjusted. The plugin
+measures the reference group's CCT and Duv first, then uses those values as the
+correction target for all other groups.
 
 ---
 
 ## How to Take Measurements with the Sekonic C-7000
 
 1. Set the meter to **Incident** mode (dome up).
-2. Position the meter at the subject position, dome pointing toward the
-   lighting grid.
+2. Position the meter at the subject position, dome toward the lighting grid.
 3. Press **Measure**.
-4. On the results screen, note:
-   - **Tcp** — Correlated Colour Temperature (CCT) in Kelvin
-   - **Δuv** — Deviation from the Planckian locus (shown as `Duv` or
-     `Deviation`). Positive = green shift, negative = magenta shift.
-   - **CRI Ra** — General Colour Rendering Index
-   - **R9** — Deep red rendering (found under the extended CRI values R1–R15)
+4. Note the following from the results screen:
+
+   | Reading | Where on the C-7000 | Description |
+   |---|---|---|
+   | **CCT (Tcp)** | Main display | Correlated Colour Temperature in Kelvin |
+   | **Duv (Δuv)** | "Deviation" field | Distance from Planckian locus (+green / -magenta) |
+   | **CRI Ra** | CRI screen | General Colour Rendering Index |
+   | **R9** | CRI screen → R1–R15 | Deep red rendering value |
+   | **TLCI** | TLCI/TLMF screen | Television Lighting Consistency Index |
 
 ---
 
 ## Understanding the Readings
 
 ### CCT (Kelvin)
-Correlated Colour Temperature. Describes how warm (low K) or cool (high K)
-the white light appears.
-
 | Value | Description |
-|-------|-------------|
+|---|---|
 | 2700–3200 K | Tungsten / warm |
 | 4000–4500 K | Fluorescent |
 | 5500–5600 K | Daylight / HMI |
 | 6000–6500 K | Overcast daylight |
 
-### Duv (Δuv) — Green-Magenta Shift
-Distance from the Planckian (black-body) locus in the CIE 1960 uv colour
-space. Even two lights with identical CCT can look very different on camera
-if their Duv values differ.
-
-| Duv | Appearance |
-|-----|------------|
-| +0.006 to +0.020 | Visible green cast |
-| −0.003 to +0.003 | Neutral / on-locus |
-| −0.020 to −0.006 | Visible magenta cast |
+### Duv — Green-Magenta Shift
+| Duv | Appearance | Gel correction |
+|---|---|---|
+| > +0.016 | Strong green cast | Full Minus Green |
+| +0.010 to +0.016 | Noticeable green | 1/2 Minus Green |
+| +0.006 to +0.010 | Slight green | 1/4 Minus Green |
+| +0.003 to +0.006 | Minor green tint | 1/8 Minus Green |
+| −0.003 to +0.003 | Neutral (on-locus) | No correction needed |
+| −0.006 to −0.003 | Minor magenta | 1/8 Plus Green |
+| −0.010 to −0.006 | Slight magenta | 1/4 Plus Green |
+| −0.016 to −0.010 | Noticeable magenta | 1/2 Plus Green |
+| < −0.016 | Strong magenta cast | Full Plus Green |
 
 ### CRI (Ra) — Colour Rendering Index
-How accurately the light renders a standard set of 8 test colours compared
-to a reference source. Scale 0–100.
 
 | CRI | Broadcast rating |
-|-----|-----------------|
+|---|---|
 | ≥ 95 | Excellent — broadcast ready |
 | 90–94 | Good — professional standard |
 | 80–89 | Acceptable |
 | < 80 | Poor — not recommended |
 
 ### R9 — Deep Red Rendering
-A single-colour score for saturated red. Critical for skin tones, red
-costumes, and props on camera. Often low on fixtures with high overall CRI.
+Critical for skin tones, red costumes, and props on camera.
 
-| R9 | Broadcast rating |
-|----|-----------------|
+| R9 | Rating |
+|---|---|
 | ≥ 90 | Excellent |
 | 80–89 | Good |
 | 50–79 | Acceptable |
 | < 50 | Poor — reds appear dull/brown on camera |
 
+### TLCI — Television Lighting Consistency Index
+Broadcast-camera-specific rating (EBU standard). More relevant than CRI for
+3-chip video cameras.
+
+| TLCI | Rating |
+|---|---|
+| ≥ 90 | Excellent — television ready |
+| 75–89 | Good — minimal correction needed |
+| 50–74 | Acceptable — correction required |
+| < 50 | Poor — not suitable for broadcast |
+
+---
+
+## Community Fixture Database
+
+After calibrating each group, the plugin saves a measurement record locally at:
+```
+SekonicCalibrator/data/fixture_log.json
+```
+
+Each record contains: date, fixture model, measured CCT/Duv/CRI/R9/TLCI,
+target CCT, and number of calibration attempts.
+
+### Enabling GitHub Upload
+
+To upload fixture data to the community database in this repository:
+
+1. Create a **GitHub personal access token** with `contents: write` permission:
+   `https://github.com/settings/tokens`
+
+2. Copy `data/config.json.example` to `data/config.json` in the plugin folder
+   and replace the placeholder:
+   ```json
+   {
+     "github_token": "ghp_your_token_here"
+   }
+   ```
+
+3. The plugin will silently upload each record as a JSON file under
+   `data/measurements/` in this repository when an internet connection is
+   available.
+
+`config.json` is listed in `.gitignore` and will never be committed.
+
 ---
 
 ## Colour Math Notes
 
-The plugin converts your CCT + Duv readings to a precise CIE 1931 xy
-chromaticity point using the following method:
-
-1. **CCT → Planckian locus xy** via the Kang et al. (2002) piecewise cubic
-   approximation. Valid range: 1667 K – 25 000 K.
-
-2. **Duv correction** — the target and measured points are each shifted off
-   the Planckian locus by their respective Duv values in the CIE 1976 u'v'
-   colour space (v' shift = Duv × 1.5, accounting for the 1960↔1976
-   scaling). The resulting target xy is sent to `SetColor("xyY", …)`.
-
-3. **HSB fallback** — if the fixture does not accept xyY, the xy chromaticity
-   is converted via the IEC 61966-2-1 sRGB matrix (D65) to HSB and applied
-   via `SetColor("HSB", …)`. Hue and saturation are preserved; brightness is
-   left at full so the operator retains intensity control.
-
----
-
-## Limitations
-
-- CRI and R9 are quality indicators only — the plugin cannot improve a
-  fixture's spectral output, only adjust its white point.
-- The HSB fallback is an approximation; highly saturated chromaticities may
-  be clamped.
-- The Kang et al. approximation has ~2 K accuracy near range boundaries.
-- One group is calibrated per run (loop through as many groups as needed).
-- The plugin does not adjust fixture intensity (Y value).
+- **CCT → xy** via Kang et al. (2002) piecewise cubic, valid 1667 K–25 000 K
+- **Duv correction** by shifting v' in CIE 1976 u'v' space (Δv' = ΔDuv × 1.5)
+- **SetColor** uses `"xyY"` for precision; falls back to `"HSB"` for fixtures
+  that don't support the xyY colour model (brightness preserved at 1.0)
 
 ---
 
 ## Running the Unit Tests
 
-The `test_color_math.lua` file contains standalone Lua 5.4 tests for all
-colour math functions. It does not require GrandMA3.
-
 ```bash
 lua5.4 test_color_math.lua
 ```
 
-Expected output: `52 passed, 0 failed`
+Expected: `76 passed, 0 failed`
 
 ---
 
 ## License
 
-MIT — see [LICENSE](LICENSE) if present, otherwise free to use and modify.
-
----
-
-## Project
+MIT — free to use and modify.
 
 Part of the [Lighttune](https://github.com/jrikner/Lighttune-0.1) project.

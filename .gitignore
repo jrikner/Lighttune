@@ -1,0 +1,6 @@
+# Never commit real tokens
+data/config.json
+
+# Local measurement logs (uploaded separately)
+data/fixture_log.json
+data/measurements/*.json
