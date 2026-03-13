@@ -1,4 +1,4 @@
--- SekonicCalibrator v0.4
+-- SekonicCalibrator v0.5
 -- Lighttune - GrandMA3 Lua Plugin
 --
 -- Calibrate fixture groups using Sekonic spectromaster measurements.
@@ -6,7 +6,8 @@
 -- Features: session goals, per-group inner loop, session summary, gel hints,
 --   TLCI metric, reference group mode, advanced Duv, GDTF capability detection,
 --   fixture name from MA3 patch, append-only fixture database with best-value
---   flags, community upload (opt-in), in-console fixture history viewer.
+--   flags, community upload (opt-in), in-console fixture history viewer,
+--   remote bridge measurement (Sekonic C-7000 over network via Raspberry Pi).
 
 --------------------------------------------------------------------------------
 -- SECTION 1: CONSTANTS
@@ -676,10 +677,83 @@ end
 
 -- Collect Sekonic measurements. When hist is provided (first attempt),
 -- prior best values are shown as context in each prompt.
-local function get_measurement_params(display, attempt, goals, hist)
+-- When config contains bridge_ip, the operator can trigger a remote measurement
+-- instead of entering values manually.
+local function get_measurement_params(display, attempt, goals, hist, config)
     local suffix     = attempt>1 and string.format(" (attempt %d)", attempt) or ""
     local track_tlci = goals.tlci and goals.tlci.mode~=GOAL_SKIP
     local meter_name = (goals.meter==METER_C700) and "C-700/C-800" or "C-7000"
+
+    -- ── Remote bridge mode ────────────────────────────────────────────────────
+    -- When a bridge IP is configured, offer the operator a choice between
+    -- triggering the meter remotely or entering values manually.
+    -- The console pauses (blocking curl) while the bridge reads the C-7000.
+    if config and config.bridge_ip and config.bridge_ip~="" then
+        ::bridge_retry::
+        local mode = MessageBox({
+            title   = "Measurement"..suffix,
+            message = string.format(
+                "Bridge configured: %s:%d\n\n"
+                .."How would you like to take this measurement?\n\n"
+                .."  Remote   – trigger %s via bridge\n"
+                .."            (console pauses ~2-5 s)\n\n"
+                .."  Manual   – type values from meter display",
+                config.bridge_ip, config.bridge_port or 8765, meter_name),
+            display_handle = display,
+            buttons = {"Remote Measurement","Enter Manually","Cancel"},
+        })
+        if mode==nil or mode==3 then return nil end
+
+        if mode==1 then
+            local measured, err = bridge_fetch_measurement(config)
+            if measured then
+                -- Show confirmation of auto-fetched values
+                local tlci_line = measured.tlci
+                    and string.format("\n  TLCI : %d", measured.tlci) or ""
+                local conf = MessageBox({
+                    title   = "Measurement Received"..suffix,
+                    message = string.format(
+                        "Values from %s meter:\n\n"
+                        .."  CCT  : %dK\n"
+                        .."  Duv  : %+.4f\n"
+                        .."  CRI  : %d\n"
+                        .."  R9   : %d"
+                        .."%s\n\n"
+                        .."Use these values?",
+                        meter_name,
+                        measured.cct, measured.duv,
+                        measured.cri, measured.r9,
+                        tlci_line),
+                    display_handle = display,
+                    buttons = {"Accept","Re-measure","Enter Manually"},
+                })
+                if conf==nil    then return nil end
+                if conf==1      then return measured end
+                if conf==2      then goto bridge_retry end
+                -- conf==3: fall through to manual entry below
+            else
+                -- Bridge returned an error; offer fallback
+                local err_r = MessageBox({
+                    title   = "Bridge Error",
+                    message = string.format(
+                        "Could not get a measurement from the bridge.\n\n"
+                        .."Error: %s\n\n"
+                        .."Check that:\n"
+                        .."  • Sekonic bridge is running on %s\n"
+                        .."  • C-7000 is connected via USB\n"
+                        .."  • Bridge IP in config.json is correct",
+                        tostring(err), config.bridge_ip),
+                    display_handle = display,
+                    buttons = {"Retry Remote","Enter Manually","Cancel"},
+                })
+                if err_r==nil or err_r==3 then return nil end
+                if err_r==1               then goto bridge_retry end
+                -- err_r==2: fall through to manual entry
+            end
+        end
+        -- mode==2 or bridge error fallback → continue to manual entry below
+    end
+    -- ── Manual entry (unchanged from v0.4) ───────────────────────────────────
 
     local function prior(rec, field, fmt)
         if attempt==1 and rec and rec[field]~=nil then
@@ -1241,15 +1315,27 @@ local function get_data_dir()
 end
 
 -- Read config.json. Returns config table or nil.
--- Supported fields: github_username (used as contributor name in DB records).
+-- Supported fields: github_token, github_username, community_upload (bool),
+--   bridge_ip (string), bridge_port (number, default 8765).
 local function load_config()
-    local dir = get_plugin_dir()
-    if not dir then return nil end
-    local path = dir .. get_sep() .. "config.json"
-    local f = io.open(path, "r"); if not f then return nil end
-    local content = f:read("*a"); f:close()
-    local username = content:match('"github_username"%s*:%s*"([^"]+)"')
-    return { github_username = username }
+    local sep  = IS_WINDOWS and "\\" or "/"
+    local path = get_data_dir()..sep.."config.json"
+    local f    = io.open(path,"r"); if not f then return nil end
+    local content=f:read("*a"); f:close()
+    local token      = content:match('"github_token"%s*:%s*"([^"]+)"')
+    local username   = content:match('"github_username"%s*:%s*"([^"]+)"')
+    local upload     = content:find('"community_upload"%s*:%s*true') ~= nil
+    local bridge_ip  = content:match('"bridge_ip"%s*:%s*"([^"]+)"')
+    local bridge_port= tonumber(content:match('"bridge_port"%s*:%s*(%d+)'))
+    -- Return nil only if there is nothing useful in the config at all
+    if (not token or token=="") and (not bridge_ip or bridge_ip=="") then return nil end
+    return {
+        github_token     = token,
+        github_username  = username,
+        community_upload = upload,
+        bridge_ip        = bridge_ip,
+        bridge_port      = bridge_port or 8765,
+    }
 end
 
 -- Append db_entry to local fixture_log.json using the append-only schema.
@@ -1269,10 +1355,124 @@ local function save_fixture_log_local(db_entry)
     return ok
 end
 
--- Save fixture measurement locally.
--- Community upload to GitHub is not available in GrandMA3 Lua (requires HTTPS;
--- only lua.ftp / plain FTP is documented). Export fixture_log.json manually
--- to share data with the community.
+local function curl_exec(cmd)
+    local ok,result=pcall(function()
+        local h=io.popen(cmd); if not h then return nil end
+        local out=h:read("*a"); h:close(); return out
+    end)
+    return ok and result or nil
+end
+
+-- Attempt a remote measurement via the Sekonic bridge server.
+-- config must have bridge_ip and optionally bridge_port (default 8765).
+-- Returns measurement table {cct,duv,cri,r9,tlci} on success, or nil + err string.
+local function bridge_fetch_measurement(config)
+    if not config or not config.bridge_ip or config.bridge_ip=="" then
+        return nil, "no_bridge_configured"
+    end
+    local url = string.format("http://%s:%d/measure",
+        config.bridge_ip, config.bridge_port or 8765)
+    local tmp = TMP_DIR..(IS_WINDOWS and "\\" or "/").."sc_bridge_measure.json"
+    local cmd = string.format(
+        'curl -s -f -X POST -H "Content-Type: application/json" -d "{}" '
+        ..'--max-time 38 -o "%s" -w "%%{http_code}" "%s" 2>%s',
+        tmp, url, NULL_DEV)
+    local code = curl_exec(cmd)
+    if not code or not code:match("^2%d%d") then
+        local err_hint = "bridge_unreachable"
+        if code and code:match("^503") then err_hint = "meter_not_connected" end
+        if code and code:match("^504") then err_hint = "measurement_timeout"  end
+        return nil, err_hint
+    end
+    local f = io.open(tmp,"r"); if not f then return nil, "response_unreadable" end
+    local body = f:read("*a"); f:close()
+    local cct  = tonumber(body:match('"cct"%s*:%s*(%-?[%d%.]+)'))
+    local duv  = tonumber(body:match('"duv"%s*:%s*(%-?[%d%.]+)'))
+    local cri  = tonumber(body:match('"cri"%s*:%s*(%d+)'))
+    local r9   = tonumber(body:match('"r9"%s*:%s*(%d+)'))
+    local tlci = tonumber(body:match('"tlci"%s*:%s*(%d+)'))  -- nil for C-700/C-800
+    if not cct or not duv or not cri or not r9 then
+        return nil, body:match('"error"%s*:%s*"([^"]+)"') or "malformed_response"
+    end
+    -- Validate ranges
+    if cct<CCT_MIN or cct>CCT_MAX then return nil,"cct_out_of_range" end
+    if duv<DUV_MIN or duv>DUV_MAX then return nil,"duv_out_of_range" end
+    if cri<CRI_MIN or cri>CRI_MAX then return nil,"cri_out_of_range" end
+    if r9 <CRI_MIN or r9 >CRI_MAX then return nil,"r9_out_of_range"  end
+    return { cct=cct, duv=duv, cri=cri, r9=r9, tlci=tlci }
+end
+
+-- Check bridge connectivity via GET /status. Returns true/false.
+local function bridge_check_status(config)
+    if not config or not config.bridge_ip or config.bridge_ip=="" then return false end
+    local url = string.format("http://%s:%d/status",
+        config.bridge_ip, config.bridge_port or 8765)
+    local cmd = string.format('curl -s -f --max-time 4 "%s" 2>%s', url, NULL_DEV)
+    local raw = curl_exec(cmd)
+    if not raw or raw=="" then return false, nil end
+    local connected = raw:find('"connected"%s*:%s*true') ~= nil
+    local meter     = raw:match('"meter"%s*:%s*"([^"]+)"') or "unknown"
+    return true, connected, meter
+end
+
+-- Upload db_entry to per-user community file (data/community/{username}.json).
+-- Uses GET→parse→append→recompute→sort→PUT.
+local function upload_community_file(db_entry, config)
+    if not config or not config.github_token or not config.github_username then return false end
+    -- Connectivity check
+    local code=curl_exec(string.format('curl -s --max-time 3 -o %s -w "%%{http_code}" https://api.github.com 2>%s',
+        NULL_DEV, NULL_DEV))
+    if not code or not code:match("^2%d%d") then return false end
+
+    local username=config.github_username
+    local filepath="data/community/"..username..".json"
+    local url=string.format("https://api.github.com/repos/%s/contents/%s", GITHUB_REPO, filepath)
+    local auth='-H "Authorization: token '..config.github_token..'"'
+
+    -- GET existing file
+    local get_resp=curl_exec(string.format('curl -s %s "%s" 2>%s', auth, url, NULL_DEV))
+    local sha=get_resp and get_resp:match('"sha"%s*:%s*"([^"]+)"') or nil
+    local records={}
+    if get_resp then
+        local b64=get_resp:match('"content"%s*:%s*"([A-Za-z0-9%+%/%=\n\\]+)"')
+        if b64 then
+            b64=b64:gsub("\\n",""):gsub("%s","")
+            local ok,dec=pcall(base64_decode,b64)
+            if ok and dec and dec~="" then records=json_parse_db_array(dec) end
+        end
+    end
+
+    -- Append, recompute, sort
+    append_fixture_record(records, db_entry)
+    sort_fixture_records(records)
+
+    local new_json=json_encode_db_array(records)
+    local b64_content=base64_encode(new_json)
+
+    local commit_msg=string.format("Update fixture data: %s %s @ %dK",
+        (db_entry.make  or ""):gsub('"','\\"'),
+        (db_entry.model or ""):gsub('"','\\"'),
+        db_entry.kelvin or 0)
+
+    local tmp=TMP_DIR..(IS_WINDOWS and "\\" or "/").."sc_community.json"
+    local tf=io.open(tmp,"w"); if not tf then return false end
+    if sha then
+        tf:write(string.format('{"message":"%s","content":"%s","sha":"%s"}',
+            commit_msg, b64_content, sha))
+    else
+        tf:write(string.format('{"message":"%s","content":"%s"}',
+            commit_msg, b64_content))
+    end
+    tf:close()
+
+    local resp=curl_exec(string.format(
+        'curl -s -X PUT %s -H "Content-Type: application/json" '
+        ..'-d @"%s" -o %s -w "%%{http_code}" "%s" 2>%s',
+        auth, tmp, NULL_DEV, url, NULL_DEV))
+    return resp and (resp=="200" or resp=="201")
+end
+
+-- Orchestrate local save and optional community upload.
 local function log_fixture_data(display, db_entry, config)
     if not db_entry.make or not db_entry.model then return end
     save_fixture_log_local(db_entry)
@@ -1287,15 +1487,15 @@ local function main(display, ...)
 
         -- ── Main menu ─────────────────────────────────────────────────────
         local menu = MessageBox({
-            title   = "SekonicCalibrator v0.4",
+            title   = "SekonicCalibrator v0.5",
             message = "Lighttune – GrandMA3 Color Calibration\n\n"
                     .."Calibrate fixture groups using your\n"
                     .."Sekonic spectromaster (C-700, C-800, or C-7000).\n\n"
                     .."What would you like to do?",
             display_handle = display,
-            buttons = {"Start Calibration","View Fixture History","Cancel"},
+            buttons = {"Start Calibration","View Fixture History","Bridge Status","Cancel"},
         })
-        if menu==nil or menu==3 then return end
+        if menu==nil or menu==4 then return end
 
         -- data_dir is provided by get_data_dir(); no mkdir needed –
         -- the data/ directory must exist as part of plugin installation.
@@ -1303,6 +1503,54 @@ local function main(display, ...)
 
         if menu==2 then
             show_fixture_history(display, data_dir)
+            return
+        end
+
+        if menu==3 then
+            -- Bridge Status: check connectivity and meter connection
+            local cfg = load_config()
+            if not cfg or not cfg.bridge_ip or cfg.bridge_ip=="" then
+                MessageBox({
+                    title   = "Bridge Not Configured",
+                    message = "No bridge IP set in config.json.\n\n"
+                            .."Add to config.json:\n\n"
+                            ..'  "bridge_ip":   "192.168.x.x",\n'
+                            ..'  "bridge_port": 8765\n\n'
+                            .."The bridge server must run on a computer\n"
+                            .."connected to your Sekonic C-7000.\n\n"
+                            .."See sekonic-bridge/README.md for setup.",
+                    display_handle = display,
+                    buttons = {"OK"},
+                })
+            else
+                local reachable, meter_connected, meter_name =
+                    bridge_check_status(cfg)
+                local status_msg
+                if not reachable then
+                    status_msg = "NOT REACHABLE\n\nCheck that:\n"
+                              .."  • Pi / bridge PC is powered on\n"
+                              .."  • Correct IP in config.json\n"
+                              .."  • On the same network as the console"
+                elseif not meter_connected then
+                    status_msg = "Bridge online, meter NOT connected\n\n"
+                              .."Plug the C-7000 USB cable into the Pi\n"
+                              .."and restart the bridge service."
+                else
+                    status_msg = "Bridge online  ✓\n"
+                              .."Meter connected  ✓\n"
+                              .."Meter model: "..(meter_name or "C-7000").."\n\n"
+                              .."Ready for remote measurement."
+                end
+                MessageBox({
+                    title   = "Bridge Status – "..(reachable and
+                                (meter_connected and "Ready" or "Meter offline")
+                                or "Unreachable"),
+                    message = string.format("Bridge: %s:%d\n\n%s",
+                        cfg.bridge_ip, cfg.bridge_port or 8765, status_msg),
+                    display_handle = display,
+                    buttons = {"OK"},
+                })
+            end
             return
         end
 
@@ -1367,7 +1615,7 @@ local function main(display, ...)
             repeat
                 attempt = attempt+1
 
-                local measured = get_measurement_params(display, attempt, goals, hist)
+                local measured = get_measurement_params(display, attempt, goals, hist, config)
                 if not measured then break end
                 last_measured = measured
 
