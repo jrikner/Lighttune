@@ -1,10 +1,10 @@
 # SekonicCalibrator
 
-**Lighttune v0.2 — GrandMA3 Lua Plugin**
+**Lighttune v0.3 — GrandMA3 Lua Plugin**
 
 Calibrate fixture groups on your GrandMA3 console using measurements from a
-**Sekonic C-7000 spectromaster**. Designed for TV and broadcast productions
-where colour accuracy and consistency across groups is critical.
+**Sekonic C-700, C-800, or C-7000 spectromaster**. Designed for TV and broadcast
+productions where colour accuracy and consistency across groups is critical.
 
 ---
 
@@ -12,17 +12,18 @@ where colour accuracy and consistency across groups is critical.
 
 The plugin walks you through a measurement-driven calibration workflow:
 
-1. Set session goals once: target Kelvin, CRI / R9 / TLCI goals, calibration mode
-2. Select a fixture group and enter its fixture make/model
-3. Enter Sekonic C-7000 readings (CCT, Duv, CRI, R9, TLCI)
-4. Review the quality assessment, correction, and physical hints
-5. Apply — the plugin sets the corrected chromaticity on the group
-6. Re-measure and repeat until happy with the group
-7. Move to the next group
-8. End-of-session summary shows all groups and goal pass/fail
+1. Choose your Sekonic meter model (C-700/C-800 or C-7000)
+2. Set session goals once: target Kelvin, CRI / R9 / TLCI goals, calibration mode
+3. Select a fixture group — make/model are read automatically from the MA3 patch
+4. Enter Sekonic readings (CCT, Duv, CRI, R9, and TLCI if C-7000)
+5. Review the quality assessment, correction, and physical hints
+6. Apply — the plugin sets the corrected chromaticity on the group
+7. Re-measure and repeat until happy with the group
+8. Move to the next group
+9. End-of-session summary shows all groups and goal pass/fail
 
-Measurements are saved locally and optionally uploaded to a community fixture
-database on GitHub for future reference.
+Calibration data is saved locally in a structured fixture database and
+optionally uploaded to a per-user community file on GitHub.
 
 ---
 
@@ -31,21 +32,26 @@ database on GitHub for future reference.
 | Feature | Description |
 |---|---|
 | **Two calibration modes** | Calibrate all groups to a set Kelvin target, or measure a reference group first and match everything else to it |
+| **Sekonic C-700/C-800 support** | TLCI input/goals are automatically disabled for meters that don't provide TLCI |
 | **CRI / R9 / TLCI goals** | Track each metric individually — set a minimum threshold or "as high as possible" |
 | **Gel correction hints** | When Duv is off, the assessment suggests the correct filter (1/8 → Full Plus/Minus Green) |
+| **Feature-aware console hints** | GDTF capabilities are read automatically — Tint channel, CTB, CTO, and color wheel corrections are only suggested when the fixture actually supports them |
+| **Fixture name from patch** | Make/model are auto-read from the MA3 patch for the selected group (manual fallback available) |
 | **Advanced Duv target** | Default 0.000 (neutral); optional custom Duv target for special production requirements |
 | **Per-group inner loop** | Re-measure and re-apply as many times as needed before moving to the next group |
 | **Session summary** | End-of-session table listing every group, its readings, Δ Kelvin, and goal pass/fail |
-| **Fixture logging** | Every calibrated group is logged locally and optionally uploaded to GitHub |
+| **Fixture database** | Per-metric best-value upsert: each (make, model, kelvin) record stores the best CRI, R9, TLCI, and Duv ever measured — only updated when a new reading is better |
+| **Community database** | Optionally upload your fixture data to a per-user JSON file on GitHub for community reference |
 
 ---
 
 ## Requirements
 
 - GrandMA3 console (software v1.6 or later recommended)
-- Sekonic C-7000 spectromaster
+- Sekonic C-700, C-800, or C-7000 spectromaster
 - Fixture groups configured in your showfile
 - `curl` available on the console OS (required for community upload only)
+- `unzip` available (required for GDTF capability detection only)
 
 ---
 
@@ -83,20 +89,33 @@ correction target for all other groups.
 
 ---
 
-## How to Take Measurements with the Sekonic C-7000
+## Supported Sekonic Meters
+
+| Model | CCT | Duv | CRI (Ra) | R9 | TLCI |
+|---|---|---|---|---|---|
+| C-700 | ✓ | ✓ | ✓ | ✓ | — |
+| C-800 | ✓ | ✓ | ✓ | ✓ | — |
+| C-7000 | ✓ | ✓ | ✓ | ✓ | ✓ |
+
+Select your meter at the start of each session. The plugin automatically disables
+TLCI input and goals when C-700 or C-800 is selected.
+
+---
+
+## How to Take Measurements with the Sekonic
 
 1. Set the meter to **Incident** mode (dome up).
 2. Position the meter at the subject position, dome toward the lighting grid.
 3. Press **Measure**.
 4. Note the following from the results screen:
 
-   | Reading | Where on the C-7000 | Description |
+   | Reading | Where on the meter | Description |
    |---|---|---|
    | **CCT (Tcp)** | Main display | Correlated Colour Temperature in Kelvin |
    | **Duv (Δuv)** | "Deviation" field | Distance from Planckian locus (+green / -magenta) |
    | **CRI Ra** | CRI screen | General Colour Rendering Index |
    | **R9** | CRI screen → R1–R15 | Deep red rendering value |
-   | **TLCI** | TLCI/TLMF screen | Television Lighting Consistency Index |
+   | **TLCI** | TLCI/TLMF screen (C-7000 only) | Television Lighting Consistency Index |
 
 ---
 
@@ -144,7 +163,7 @@ Critical for skin tones, red costumes, and props on camera.
 
 ### TLCI — Television Lighting Consistency Index
 Broadcast-camera-specific rating (EBU standard). More relevant than CRI for
-3-chip video cameras.
+3-chip video cameras. Available on Sekonic C-7000 only.
 
 | TLCI | Rating |
 |---|---|
@@ -155,34 +174,86 @@ Broadcast-camera-specific rating (EBU standard). More relevant than CRI for
 
 ---
 
-## Community Fixture Database
+## GDTF Capability Detection
 
-After calibrating each group, the plugin saves a measurement record locally at:
+When a fixture make/model is identified (from the MA3 patch or entered manually),
+the plugin looks for a matching GDTF file in the GrandMA3 library:
+
+```
+~/MALightingTechnology/gma3_library/gdtf/
+```
+
+If found, the GDTF is read to detect which colour attributes the fixture
+supports. Correction hints in the assessment screen are then tailored to what
+the fixture can actually do:
+
+| Capability detected | Hint shown |
+|---|---|
+| `Tint` DMX attribute | Suggest adjusting Tint channel to correct Duv |
+| `CTB` attribute | Suggest using CTB to reduce CCT |
+| `CTO` attribute | Suggest using CTO to raise CCT |
+| Color wheel with correction slots | Suggest checking color wheel slots |
+
+Gel hints (physical external filters) are always shown regardless of GDTF data.
+
+---
+
+## Fixture Database
+
+After calibrating each group, the plugin saves a measurement record to the local
+fixture database:
 ```
 SekonicCalibrator/data/fixture_log.json
 ```
 
-Each record contains: date, fixture model, measured CCT/Duv/CRI/R9/TLCI,
-target CCT, and number of calibration attempts.
+### Schema
+
+Each record represents one fixture type at one tested Kelvin. Per-metric, only
+the **best value ever measured** is kept (CRI/R9/TLCI: higher is better;
+Duv: closer to zero is better):
+
+```json
+[
+  {
+    "make": "Aputure",
+    "model": "600X Pro",
+    "kelvin": 5600,
+    "cri":  { "value": 95, "params": "5572K Duv:+0.0030", "date": "2026-03-13", "contributor": "jrikner" },
+    "r9":   { "value": 88, "params": "5572K Duv:+0.0030", "date": "2026-03-13", "contributor": "jrikner" },
+    "tlci": { "value": 91, "params": "5572K Duv:+0.0030", "date": "2026-03-13", "contributor": "jrikner" },
+    "duv":  { "value": 0.003, "params": "5572K Duv:+0.0030", "date": "2026-03-13", "contributor": "jrikner" }
+  }
+]
+```
+
+**Upsert rules:**
+- Same make + model + kelvin → only update a metric if the new value is better
+- New kelvin for an existing fixture → add as a new record
+- Local file is sorted: make A→Z, then model A→Z, then kelvin low→high
+
+---
+
+## Community Fixture Database
 
 ### Enabling GitHub Upload
-
-To upload fixture data to the community database in this repository:
 
 1. Create a **GitHub personal access token** with `contents: write` permission:
    `https://github.com/settings/tokens`
 
 2. Copy `data/config.json.example` to `data/config.json` in the plugin folder
-   and replace the placeholder:
+   and fill in your details:
    ```json
    {
-     "github_token": "ghp_your_token_here"
+     "github_token":    "ghp_your_token_here",
+     "github_username": "your_github_username"
    }
    ```
 
-3. The plugin will silently upload each record as a JSON file under
-   `data/measurements/` in this repository when an internet connection is
-   available.
+3. The plugin will upload each fixture record to your personal file under
+   `data/community/{username}.json` in this repository.
+
+Community files are sorted: GitHub usernames A→Z, then within each user's file:
+make A→Z → model A→Z → kelvin low→high.
 
 `config.json` is listed in `.gitignore` and will never be committed.
 
@@ -203,7 +274,7 @@ To upload fixture data to the community database in this repository:
 lua5.4 test_color_math.lua
 ```
 
-Expected: `76 passed, 0 failed`
+Expected: `118 passed, 0 failed`
 
 ---
 

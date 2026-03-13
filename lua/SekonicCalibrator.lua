@@ -1,9 +1,11 @@
--- SekonicCalibrator v0.2
+-- SekonicCalibrator v0.3
 -- Lighttune - GrandMA3 Lua Plugin
 --
--- Calibrate fixture groups using Sekonic C-7000 spectromaster measurements.
+-- Calibrate fixture groups using Sekonic spectromaster measurements.
+-- Supported meters: C-700, C-800 (no TLCI), C-7000 (full).
 -- Features: session goals, per-group inner loop, session summary, gel hints,
---   TLCI metric, reference group mode, advanced Duv, fixture data logging.
+--   TLCI metric, reference group mode, advanced Duv, GDTF capability detection,
+--   fixture name from MA3 patch, per-metric fixture database with upsert.
 
 --------------------------------------------------------------------------------
 -- SECTION 1: CONSTANTS
@@ -32,8 +34,11 @@ local GOAL_SKIP = "skip"  -- not tracked this session
 local MODE_TARGET    = "target"    -- calibrate all groups to a set Kelvin
 local MODE_REFERENCE = "reference" -- match all groups to a reference measurement
 
+-- Sekonic meter models
+local METER_C700  = "c700"   -- C-700 / C-800: CCT, Duv, CRI, R9 (no TLCI)
+local METER_C7000 = "c7000"  -- C-7000: CCT, Duv, CRI, R9, TLCI
+
 -- Gel correction steps: |Duv| threshold → gel amount label
--- Industry-standard green/magenta correction filter guide
 local GEL_STEPS = {
     { threshold = 0.016, amount = "Full" },
     { threshold = 0.010, amount = "1/2"  },
@@ -163,7 +168,6 @@ end
 local function goal_status_str(measured_val, goal)
     if not goal or goal.mode == GOAL_SKIP then return "" end
     if goal.mode == GOAL_MAX then return "  [maximize]" end
-    -- GOAL_MIN
     if measured_val >= goal.value then
         return string.format("  [GOAL MET \xe2\x89\xa5%d]", goal.value)
     else
@@ -191,8 +195,12 @@ local function gel_hint(duv)
     end
 end
 
+-- Base64 alphabet (shared by encoder and decoder).
+local B64_CHARS  = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+local B64_LOOKUP = {}
+for i = 1, #B64_CHARS do B64_LOOKUP[B64_CHARS:sub(i, i)] = i - 1 end
+
 -- Base64 encoder (used for GitHub API uploads). Lua 5.4 bitwise operators.
-local B64_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 local function base64_encode(data)
     local result = {}
     for i = 1, #data, 3 do
@@ -210,26 +218,185 @@ local function base64_encode(data)
     return encoded:sub(1, #encoded - pad) .. ("="):rep(pad)
 end
 
--- Minimal JSON encoder for a flat key-value entry table.
-local function json_encode_entry(entry)
-    local order = {
-        "date", "fixture", "group",
-        "cct_measured", "duv_measured", "cri", "r9", "tlci",
-        "cct_target", "duv_target", "attempts",
-    }
-    local parts = {}
-    for _, k in ipairs(order) do
-        local v = entry[k]
-        local kstr = '"' .. k .. '"'
-        if type(v) == "string" then
-            parts[#parts + 1] = kstr .. ':"' .. v:gsub('"', '\\"') .. '"'
-        elseif type(v) == "number" then
-            parts[#parts + 1] = kstr .. ":" .. tostring(v)
-        elseif v == nil then
-            parts[#parts + 1] = kstr .. ":null"
+-- Base64 decoder (used for reading GitHub API responses).
+local function base64_decode(data)
+    data = data:gsub("[^%w%+%/%=]", "")
+    local result = {}
+    for i = 1, #data, 4 do
+        local a = B64_LOOKUP[data:sub(i,   i)]   or 0
+        local b = B64_LOOKUP[data:sub(i+1, i+1)] or 0
+        local c = B64_LOOKUP[data:sub(i+2, i+2)] or 0
+        local d = B64_LOOKUP[data:sub(i+3, i+3)] or 0
+        local n = (a << 18) | (b << 12) | (c << 6) | d
+        result[#result + 1] = string.char((n >> 16) & 0xFF)
+        if data:sub(i+2, i+2) ~= "=" then
+            result[#result + 1] = string.char((n >> 8) & 0xFF)
+        end
+        if data:sub(i+3, i+3) ~= "=" then
+            result[#result + 1] = string.char(n & 0xFF)
         end
     end
-    return "{" .. table.concat(parts, ",") .. "}"
+    return table.concat(result)
+end
+
+--------------------------------------------------------------------------------
+-- SECTION 2b: FIXTURE DATABASE – JSON HELPERS
+--
+-- Schema: array of records, one per (make, model, kelvin) triplet.
+-- Each metric stores the best measurement ever logged for that fixture/kelvin:
+--   { value, params, date, contributor }
+-- "Best" = highest for CRI/R9/TLCI; lowest |value| for Duv.
+--------------------------------------------------------------------------------
+
+-- Encode a single metric sub-object, or "null" if nil.
+local function json_encode_metric(m)
+    if not m then return "null" end
+    return string.format(
+        '{"value":%s,"params":"%s","date":"%s","contributor":"%s"}',
+        tostring(m.value),
+        (m.params or ""):gsub('"', '\\"'),
+        (m.date or ""):gsub('"', '\\"'),
+        (m.contributor or ""):gsub('"', '\\"')
+    )
+end
+
+-- Encode a full DB record.
+local function json_encode_db_record(rec)
+    return string.format(
+        '{"make":"%s","model":"%s","kelvin":%d,"cri":%s,"r9":%s,"tlci":%s,"duv":%s}',
+        (rec.make  or ""):gsub('"', '\\"'),
+        (rec.model or ""):gsub('"', '\\"'),
+        rec.kelvin or 0,
+        json_encode_metric(rec.cri),
+        json_encode_metric(rec.r9),
+        json_encode_metric(rec.tlci),
+        json_encode_metric(rec.duv)
+    )
+end
+
+-- Encode a full array of records as a pretty-printed JSON array.
+local function json_encode_db_array(records)
+    if #records == 0 then return "[]" end
+    local parts = {}
+    for _, rec in ipairs(records) do
+        parts[#parts + 1] = json_encode_db_record(rec)
+    end
+    return "[\n" .. table.concat(parts, ",\n") .. "\n]"
+end
+
+-- Extract a string value from a JSON fragment: "key":"value"
+local function json_get_str(json, key)
+    return json:match('"' .. key .. '"%s*:%s*"([^"]*)"')
+end
+
+-- Extract a number value from a JSON fragment: "key":number
+local function json_get_num(json, key)
+    return tonumber(json:match('"' .. key .. '"%s*:%s*(-?%d+%.?%d*)'))
+end
+
+-- Parse a metric sub-object from within a JSON block.
+local function json_parse_metric(json_block, key)
+    if json_block:find('"' .. key .. '"%s*:%s*null') then return nil end
+    local sub = json_block:match('"' .. key .. '"%s*:%s*(%b{})')
+    if not sub then return nil end
+    local val = json_get_num(sub, "value")
+    if not val then return nil end
+    return {
+        value       = val,
+        params      = json_get_str(sub, "params")      or "",
+        date        = json_get_str(sub, "date")        or "",
+        contributor = json_get_str(sub, "contributor") or "",
+    }
+end
+
+-- Parse a JSON array of DB records produced by json_encode_db_array.
+-- Silently ignores malformed blocks.
+local function json_parse_db_array(content)
+    if not content or content:match("^%s*%[%s*%]%s*$") then return {} end
+    local records = {}
+    -- %b{} matches each balanced {…} block (handles nested braces correctly)
+    for block in content:gmatch("%b{}") do
+        local make   = json_get_str(block, "make")
+        local model  = json_get_str(block, "model")
+        local kelvin = json_get_num(block, "kelvin")
+        if make and model and kelvin then
+            records[#records + 1] = {
+                make   = make,
+                model  = model,
+                kelvin = kelvin,
+                cri    = json_parse_metric(block, "cri"),
+                r9     = json_parse_metric(block, "r9"),
+                tlci   = json_parse_metric(block, "tlci"),
+                duv    = json_parse_metric(block, "duv"),
+            }
+        end
+    end
+    return records
+end
+
+-- Upsert a new measurement into a records array.
+-- db_entry: { make, model, kelvin, cri, r9, tlci, duv, cct_measured }
+-- Same fixture+kelvin: update a metric only if the new value is better.
+-- New kelvin: insert a new record.
+local function upsert_fixture_record(records, db_entry, contributor)
+    local date       = os.date("%Y-%m-%d")
+    contributor      = contributor or "anonymous"
+    local params_str = string.format("%dK Duv:%+.4f", db_entry.cct_measured, db_entry.duv)
+
+    local existing = nil
+    for _, rec in ipairs(records) do
+        if rec.make == db_entry.make
+           and rec.model  == db_entry.model
+           and rec.kelvin == db_entry.kelvin then
+            existing = rec
+            break
+        end
+    end
+
+    local function make_metric(val)
+        if not val then return nil end
+        return { value = val, params = params_str, date = date, contributor = contributor }
+    end
+
+    if not existing then
+        records[#records + 1] = {
+            make   = db_entry.make,
+            model  = db_entry.model,
+            kelvin = db_entry.kelvin,
+            cri    = make_metric(db_entry.cri),
+            r9     = make_metric(db_entry.r9),
+            tlci   = make_metric(db_entry.tlci),
+            duv    = make_metric(db_entry.duv),
+        }
+    else
+        -- Higher is better for CRI, R9, TLCI
+        if db_entry.cri and
+           (not existing.cri or db_entry.cri > existing.cri.value) then
+            existing.cri = make_metric(db_entry.cri)
+        end
+        if db_entry.r9 and
+           (not existing.r9 or db_entry.r9 > existing.r9.value) then
+            existing.r9 = make_metric(db_entry.r9)
+        end
+        if db_entry.tlci and
+           (not existing.tlci or db_entry.tlci > existing.tlci.value) then
+            existing.tlci = make_metric(db_entry.tlci)
+        end
+        -- Lower |duv| is better (closest to on-locus)
+        if db_entry.duv and
+           (not existing.duv or math.abs(db_entry.duv) < math.abs(existing.duv.value)) then
+            existing.duv = make_metric(db_entry.duv)
+        end
+    end
+end
+
+-- Sort records: make A→Z, then model A→Z, then kelvin low→high.
+local function sort_fixture_records(records)
+    table.sort(records, function(a, b)
+        if a.make  ~= b.make  then return a.make  < b.make  end
+        if a.model ~= b.model then return a.model < b.model end
+        return a.kelvin < b.kelvin
+    end)
 end
 
 --------------------------------------------------------------------------------
@@ -239,10 +406,10 @@ end
 -- Display the welcome / intro dialog.
 local function show_welcome(display)
     local result = MessageBox({
-        title          = "SekonicCalibrator v0.2",
+        title          = "SekonicCalibrator v0.3",
         message        = "Lighttune – GrandMA3 Color Calibration\n\n"
-                       .. "Calibrate fixture groups using measurements\n"
-                       .. "from your Sekonic C-7000 spectromaster.\n\n"
+                       .. "Calibrate fixture groups using measurements from\n"
+                       .. "your Sekonic spectromaster (C-700, C-800, or C-7000).\n\n"
                        .. "Session goals set once:\n"
                        .. "  • Target Kelvin (or match a reference group)\n"
                        .. "  • CRI / R9 / TLCI goals\n\n"
@@ -308,76 +475,91 @@ local function get_one_spectral_goal(display, metric_name, typical_min)
 end
 
 -- Prompt for spectral goals (CRI, R9, TLCI) based on a combined selection.
+-- meter: METER_C700 or METER_C7000 – TLCI only available on C-7000.
 -- Returns { cri, r9, tlci } (each a goal table) or nil on cancel.
-local function get_spectral_goals(display)
-    local choice = MessageBox({
-        title          = "Quality Goals",
-        message        = "Which colour quality metrics to track?\n\n"
-                       .. "  CRI & R9      – general rendering + deep red\n"
-                       .. "  All three     – CRI, R9, and TLCI (broadcast camera)\n"
-                       .. "  Custom        – choose each metric individually\n"
-                       .. "  Skip          – no quality tracking",
-        display_handle = display,
-        buttons        = { "CRI & R9", "All three", "Custom", "Skip" },
-    })
+local function get_spectral_goals(display, meter)
+    local allow_tlci = (meter == METER_C7000)
+
+    local choice
+    if allow_tlci then
+        choice = MessageBox({
+            title          = "Quality Goals",
+            message        = "Which colour quality metrics to track?\n\n"
+                           .. "  CRI & R9      – general rendering + deep red\n"
+                           .. "  All three     – CRI, R9, and TLCI (broadcast camera)\n"
+                           .. "  Custom        – choose each metric individually\n"
+                           .. "  Skip          – no quality tracking",
+            display_handle = display,
+            buttons        = { "CRI & R9", "All three", "Custom", "Skip" },
+        })
+    else
+        choice = MessageBox({
+            title          = "Quality Goals",
+            message        = "Which colour quality metrics to track?\n\n"
+                           .. "  CRI & R9      – general rendering + deep red\n"
+                           .. "  CRI only      – general colour rendering\n"
+                           .. "  R9 only       – deep red rendering\n"
+                           .. "  Skip          – no quality tracking\n\n"
+                           .. "Note: TLCI requires Sekonic C-7000",
+            display_handle = display,
+            buttons        = { "CRI & R9", "CRI only", "R9 only", "Skip" },
+        })
+    end
     if choice == nil then return nil end
 
-    local track_cri, track_r9, track_tlci
+    local track_cri, track_r9, track_tlci = false, false, false
+    local skip_all = false
 
-    if choice == 1 then
-        track_cri = true; track_r9 = true; track_tlci = false
-    elseif choice == 2 then
-        track_cri = true; track_r9 = true; track_tlci = true
-    elseif choice == 4 then
-        return { cri = { mode=GOAL_SKIP }, r9 = { mode=GOAL_SKIP }, tlci = { mode=GOAL_SKIP } }
-    else  -- Custom
-        local sel = MessageBox({
-            title          = "Custom Metrics",
-            message        = "Select metrics to track (choose one combination):\n\n"
-                           .. "  CRI only     R9 only     TLCI only",
-            display_handle = display,
-            buttons        = { "CRI only", "R9 only", "TLCI only" },
-        })
-        if sel == nil then return nil end
-        track_cri  = (sel == 1)
-        track_r9   = (sel == 2)
-        track_tlci = (sel == 3)
-    end
-
-    local cri_goal, r9_goal, tlci_goal
-
-    if track_cri then
-        cri_goal = get_one_spectral_goal(display, "CRI (Ra)", 90)
-        if not cri_goal then return nil end
+    if allow_tlci then
+        if     choice == 1 then track_cri = true; track_r9 = true
+        elseif choice == 2 then track_cri = true; track_r9 = true; track_tlci = true
+        elseif choice == 4 then skip_all = true
+        else -- Custom
+            local sel = MessageBox({
+                title          = "Custom Metrics",
+                message        = "Select one metric to track:\n\n"
+                               .. "  CRI only   R9 only   TLCI only",
+                display_handle = display,
+                buttons        = { "CRI only", "R9 only", "TLCI only" },
+            })
+            if sel == nil then return nil end
+            track_cri  = (sel == 1)
+            track_r9   = (sel == 2)
+            track_tlci = (sel == 3)
+        end
     else
-        cri_goal = { mode = GOAL_SKIP }
+        if     choice == 1 then track_cri = true; track_r9 = true
+        elseif choice == 2 then track_cri = true
+        elseif choice == 3 then track_r9  = true
+        else skip_all = true
+        end
     end
 
-    if track_r9 then
-        r9_goal = get_one_spectral_goal(display, "R9", 80)
-        if not r9_goal then return nil end
-    else
-        r9_goal = { mode = GOAL_SKIP }
+    if skip_all then
+        return {
+            cri  = { mode = GOAL_SKIP },
+            r9   = { mode = GOAL_SKIP },
+            tlci = { mode = GOAL_SKIP },
+        }
     end
 
-    if track_tlci then
-        tlci_goal = get_one_spectral_goal(display, "TLCI", 75)
-        if not tlci_goal then return nil end
-    else
-        tlci_goal = { mode = GOAL_SKIP }
-    end
+    local cri_goal  = track_cri  and get_one_spectral_goal(display, "CRI (Ra)", 90) or { mode = GOAL_SKIP }
+    if track_cri  and not cri_goal  then return nil end
+    local r9_goal   = track_r9   and get_one_spectral_goal(display, "R9",       80) or { mode = GOAL_SKIP }
+    if track_r9   and not r9_goal   then return nil end
+    local tlci_goal = track_tlci and get_one_spectral_goal(display, "TLCI",     75) or { mode = GOAL_SKIP }
+    if track_tlci and not tlci_goal then return nil end
 
     return { cri = cri_goal, r9 = r9_goal, tlci = tlci_goal }
 end
 
 -- Collect reference group CCT and Duv (reference mode only).
--- Returns { cct, duv } or nil on cancel.
 local function get_reference_measurements(display, ref_group)
     local cct = get_number_input(
         display,
         "Reference CCT – " .. ref_group,
         string.format(
-            "Measure '%s' with your Sekonic C-7000.\n\n"
+            "Measure '%s' with your Sekonic meter.\n\n"
             .. "Enter the measured CCT (Kelvin).\nRange: %d – %d",
             ref_group, CCT_MIN, CCT_MAX
         ),
@@ -401,8 +583,19 @@ local function get_reference_measurements(display, ref_group)
 end
 
 -- Collect all session goals (called once at the start).
--- Returns goals table or nil on cancel.
 local function get_session_goals(display)
+    -- ── Sekonic meter model ───────────────────────────────────────────────
+    local meter_choice = MessageBox({
+        title          = "Sekonic Meter Model",
+        message        = "Which Sekonic meter are you using?\n\n"
+                       .. "  C-700 / C-800  – CCT, Duv, CRI, R9  (no TLCI)\n"
+                       .. "  C-7000         – CCT, Duv, CRI, R9, TLCI",
+        display_handle = display,
+        buttons        = { "C-700 / C-800", "C-7000" },
+    })
+    if meter_choice == nil then return nil end
+    local meter = (meter_choice == 1) and METER_C700 or METER_C7000
+
     -- ── Calibration mode ─────────────────────────────────────────────────
     local mode_choice = MessageBox({
         title          = "Calibration Mode",
@@ -416,12 +609,11 @@ local function get_session_goals(display)
     })
     if mode_choice == nil then return nil end
 
-    local cal_mode = (mode_choice == 1) and MODE_TARGET or MODE_REFERENCE
+    local cal_mode  = (mode_choice == 1) and MODE_TARGET or MODE_REFERENCE
     local ref_group = nil
     local cct, duv
 
     if cal_mode == MODE_REFERENCE then
-        -- Ask for reference group name
         local rg = nil
         for attempt = 1, 3 do
             local prefix = attempt > 1 and "Please enter a valid name.\n\n" or ""
@@ -440,7 +632,6 @@ local function get_session_goals(display)
         if not rg then return nil end
         ref_group = rg
 
-        -- Measure the reference group
         local ref_meas = get_reference_measurements(display, ref_group)
         if not ref_meas then return nil end
 
@@ -507,10 +698,11 @@ local function get_session_goals(display)
     end
 
     -- ── Spectral goals ────────────────────────────────────────────────────
-    local spectral = get_spectral_goals(display)
+    local spectral = get_spectral_goals(display, meter)
     if not spectral then return nil end
 
     return {
+        meter     = meter,
         mode      = cal_mode,
         ref_group = ref_group,
         cct       = cct,
@@ -539,35 +731,118 @@ local function get_group_input(display)
     return nil
 end
 
--- Prompt for fixture make/model (optional, for the community log).
--- Returns string or "Unknown" if skipped.
-local function get_fixture_model_input(display)
-    local r = MessageBox({
-        title          = "Fixture Model (optional)",
-        message        = "Enter the fixture type/model for this group.\n"
-                       .. "This is logged to the fixture database.\n\n"
-                       .. "e.g.  Aputure 600X Pro\n"
-                       .. "      Arri SkyPanel S60-C\n"
-                       .. "      Chroma-Q Space Force\n\n"
-                       .. "Leave blank to skip.",
+-- Attempt to read fixture manufacturer and model from the MA3 patch for a group.
+-- Returns make, model (strings) or nil, nil if unavailable.
+local function get_fixture_from_patch(group_name)
+    local make, model = nil, nil
+    pcall(function()
+        local dp = DataPool()
+        if not dp then return end
+        local groups = dp.Groups
+        if not groups then return end
+
+        -- Try numeric access first, then name search
+        local grp = nil
+        local num = tonumber(group_name)
+        if num then
+            grp = groups:Child(num - 1)  -- MA3 children are 0-indexed
+        end
+        if not grp then
+            for i = 0, groups:Count() - 1 do
+                local g = groups:Child(i)
+                if g and g.Name == group_name then
+                    grp = g
+                    break
+                end
+            end
+        end
+        if not grp then return end
+
+        -- Walk group members to find first fixture
+        local members = grp.Members
+        if not members or members:Count() == 0 then return end
+        local fixture = members:Child(0)
+        if not fixture then return end
+
+        -- Read fixture type properties
+        local ft = fixture.FixtureType
+        if not ft then return end
+
+        local m = ft.Manufacturer
+        local n = ft.Long or ft.Name
+        if m and m ~= "" then make  = m end
+        if n and n ~= "" then model = n end
+    end)
+    return make, model
+end
+
+-- Prompt for fixture make and model. Tries patch auto-read first.
+-- Returns make, model (strings) or nil, nil if skipped.
+local function get_fixture_model_input(display, group_name)
+    -- Try to auto-read from MA3 patch
+    local patch_make, patch_model = get_fixture_from_patch(group_name)
+
+    if patch_make and patch_model then
+        local r = MessageBox({
+            title          = "Fixture Identified",
+            message        = string.format(
+                "Fixture detected from patch:\n\n"
+                .. "  Make:  %s\n"
+                .. "  Model: %s\n\n"
+                .. "Use this for the fixture database?",
+                patch_make, patch_model
+            ),
+            display_handle = display,
+            buttons        = { "Yes, use this", "Enter manually", "Skip" },
+        })
+        if r == nil or r == 3 then return nil, nil end
+        if r == 1 then return patch_make, patch_model end
+        -- r == 2: fall through to manual entry
+    end
+
+    -- Manual entry: make then model
+    local make_r = MessageBox({
+        title          = "Fixture Make",
+        message        = "Enter the fixture manufacturer name.\n"
+                       .. "e.g.  Aputure  |  Arri  |  Chroma-Q\n\n"
+                       .. "Leave blank to skip fixture logging.",
         display_handle = display,
         input          = true,
         buttons        = { "OK", "Skip" },
     })
-    if r == nil or r == 2 then return "Unknown" end
-    local v = tostring(r):match("^%s*(.-)%s*$")
-    return (v ~= "") and v or "Unknown"
+    if make_r == nil or make_r == 2 then return nil, nil end
+    local make = tostring(make_r):match("^%s*(.-)%s*$")
+    if make == "" then return nil, nil end
+
+    local model_r = MessageBox({
+        title          = "Fixture Model",
+        message        = string.format(
+            "Enter the model name for %s.\n"
+            .. "e.g.  600X Pro  |  SkyPanel S60-C  |  Space Force",
+            make
+        ),
+        display_handle = display,
+        input          = true,
+        buttons        = { "OK", "Skip" },
+    })
+    if model_r == nil or model_r == 2 then return nil, nil end
+    local model = tostring(model_r):match("^%s*(.-)%s*$")
+    if model == "" then return nil, nil end
+
+    return make, model
 end
 
--- Collect Sekonic C-7000 measurements for the current attempt.
--- goals is needed to know whether to ask for TLCI.
+-- Collect Sekonic measurements for the current attempt.
+-- goals is needed to know which meter is in use (TLCI availability).
 local function get_measurement_params(display, attempt, goals)
-    local suffix = attempt > 1 and string.format(" (attempt %d)", attempt) or ""
+    local suffix     = attempt > 1 and string.format(" (attempt %d)", attempt) or ""
     local track_tlci = goals.tlci and goals.tlci.mode ~= GOAL_SKIP
+    local meter_name = (goals.meter == METER_C700) and "C-700/C-800" or "C-7000"
 
     local cct = get_number_input(
         display, "Measured CCT" .. suffix,
-        string.format("CCT reading from Sekonic C-7000.\nRange: %d – %d K", CCT_MIN, CCT_MAX),
+        string.format("CCT reading from Sekonic %s.\nRange: %d – %d K",
+            meter_name, CCT_MIN, CCT_MAX),
         CCT_MIN, CCT_MAX
     )
     if not cct then return nil end
@@ -575,10 +850,10 @@ local function get_measurement_params(display, attempt, goals)
     local duv = get_number_input(
         display, "Measured Duv" .. suffix,
         string.format(
-            "Duv (\xce\x94uv) reading from Sekonic C-7000.\nRange: %g to %+g\n\n"
+            "Duv (\xce\x94uv) reading from Sekonic %s.\nRange: %g to %+g\n\n"
             .. "Shown as 'Deviation' or '\xce\x94uv' on the meter.\n"
             .. "+value = green  |  -value = magenta",
-            DUV_MIN, DUV_MAX
+            meter_name, DUV_MIN, DUV_MAX
         ),
         DUV_MIN, DUV_MAX
     )
@@ -586,7 +861,8 @@ local function get_measurement_params(display, attempt, goals)
 
     local cri = get_number_input(
         display, "Measured CRI (Ra)" .. suffix,
-        string.format("CRI (Ra) reading from Sekonic C-7000.\nRange: %d – %d", CRI_MIN, CRI_MAX),
+        string.format("CRI (Ra) reading from Sekonic %s.\nRange: %d – %d",
+            meter_name, CRI_MIN, CRI_MAX),
         CRI_MIN, CRI_MAX
     )
     if not cri then return nil end
@@ -594,9 +870,9 @@ local function get_measurement_params(display, attempt, goals)
     local r9 = get_number_input(
         display, "Measured R9" .. suffix,
         string.format(
-            "R9 (deep red) reading from Sekonic C-7000.\nRange: %d – %d\n\n"
+            "R9 (deep red) from Sekonic %s.\nRange: %d – %d\n\n"
             .. "Critical for skin tones and costumes on camera.",
-            CRI_MIN, CRI_MAX
+            meter_name, CRI_MIN, CRI_MAX
         ),
         CRI_MIN, CRI_MAX
     )
@@ -651,8 +927,11 @@ local function goals_summary_line(goals)
     return mode_prefix .. "Goals: " .. table.concat(parts, "  ")
 end
 
--- Show assessment + correction summary. Returns true = apply, false = skip.
-local function show_assessment(display, group, goals, measured, correction, attempt)
+-- Show assessment + correction summary.
+-- caps (optional): GDTF capability table { has_tint, has_cto, has_ctb,
+--                  has_color_wheel, has_rgb } — enables feature-aware hints.
+-- Returns true = apply, false = skip.
+local function show_assessment(display, group, goals, measured, correction, attempt, caps)
     local cri_rating  = rate_quality(measured.cri, QUALITY.CRI)
     local r9_rating   = rate_quality(measured.r9,  QUALITY.R9)
     local tlci_rating = measured.tlci and rate_quality(measured.tlci, QUALITY.TLCI) or "n/a"
@@ -679,18 +958,45 @@ local function show_assessment(display, group, goals, measured, correction, atte
     end
     local warns_str = #warns > 0 and ("\n" .. table.concat(warns, "\n") .. "\n") or ""
 
-    -- Gel + spectral hints
+    -- Hints
     local hints = {}
+
+    -- Physical gel (always shown when Duv is off – external correction)
     local gh = gel_hint(measured.duv)
-    if gh then hints[#hints + 1] = "  Gel:  " .. gh end
+    if gh then hints[#hints + 1] = "  Gel (physical): " .. gh end
+
+    -- Console correction hints – only shown when fixture has the capability
+    if caps then
+        if caps.has_tint and math.abs(measured.duv) > QUALITY.DUV.good then
+            local tint_dir = measured.duv > 0 and "negative (magenta)" or "positive (green)"
+            hints[#hints + 1] = string.format(
+                "  Tint channel: Fixture has Tint DMX – shift toward %s to correct Duv",
+                tint_dir
+            )
+        end
+        local dk = correction.delta_cct
+        if math.abs(dk) > 200 then
+            if dk < 0 and caps.has_ctb then
+                hints[#hints + 1] = "  CTB: Fixture has CTB channel – use to reduce CCT"
+            elseif dk > 0 and caps.has_cto then
+                hints[#hints + 1] = "  CTO: Fixture has CTO channel – use to raise CCT"
+            end
+            if caps.has_color_wheel then
+                hints[#hints + 1] = "  Color wheel: Check for a CTB/CTO correction slot"
+            end
+        end
+    end
+
+    -- Spectral issues (cannot be fixed via console)
     if measured.cri < 85 then
-        hints[#hints + 1] = "  CRI:  Cannot be improved via console – try a different"
-        hints[#hints + 1] = "         fixture or enable the fixture's high-CRI mode"
+        hints[#hints + 1] = "  CRI: Cannot be improved via console – try a different"
+        hints[#hints + 1] = "       fixture or enable the fixture's high-CRI mode"
     end
     if measured.r9 < 65 then
-        hints[#hints + 1] = "  R9:   Low R9 is a fixture spectral issue – consider a"
-        hints[#hints + 1] = "         high-R9 fixture or add a warming gel"
+        hints[#hints + 1] = "  R9:  Low R9 is a spectral issue – consider a high-R9"
+        hints[#hints + 1] = "       fixture or add a warming gel"
     end
+
     local hints_str = #hints > 0
         and ("\n== Hints ==\n\n" .. table.concat(hints, "\n") .. "\n")
         or  ""
@@ -705,7 +1011,6 @@ local function show_assessment(display, group, goals, measured, correction, atte
                  or dkduv < 0 and string.format("%.4f",  dkduv)
                  or "0.000 (on target)"
 
-    -- TLCI row (only if measured)
     local tlci_row = measured.tlci
         and string.format("  TLCI     :  %3d  \xe2\x86\x92  %-11s%s\n", measured.tlci, tlci_rating, tlci_gs)
         or  ""
@@ -756,7 +1061,7 @@ local function show_result(display, success, group, method, err_msg)
             title   = "Correction Applied",
             message = string.format(
                 "Correction applied to Group %s.\nMethod: %s\n\n"
-                .. "Re-measure with Sekonic C-7000 to confirm.",
+                .. "Re-measure with Sekonic meter to confirm.",
                 group, method
             ),
             display_handle = display,
@@ -822,7 +1127,6 @@ local function show_session_summary(display, session_log, goals)
                     or dk < 0 and string.format("%dK",  dk)
                     or "0K"
 
-        -- Build status string
         local fails = {}
         local function check(label, val, goal)
             if not goal or goal.mode == GOAL_SKIP then return end
@@ -841,7 +1145,6 @@ local function show_session_summary(display, session_log, goals)
             status = "goals skipped"
         end
 
-        -- Metrics line
         local metrics = ""
         if m then
             metrics = string.format("CRI:%d  R9:%d", m.cri, m.r9)
@@ -849,12 +1152,14 @@ local function show_session_summary(display, session_log, goals)
             metrics = metrics .. string.format("  Duv:%+.3f", m.duv)
         end
 
-        local fixture_str = (entry.fixture and entry.fixture ~= "Unknown")
-            and (" [" .. entry.fixture .. "]") or ""
+        local fix_str = ""
+        if entry.make and entry.model then
+            fix_str = string.format(" [%s %s]", entry.make, entry.model)
+        end
 
         lines[#lines + 1] = string.format(
             "\nGroup: %s%s\n  %s  \xce\x94K:%s  (%d attempt%s)\n  Status: %s",
-            entry.group, fixture_str,
+            entry.group, fix_str,
             metrics, dk_str,
             entry.attempt, entry.attempt == 1 and "" or "s",
             status
@@ -867,6 +1172,92 @@ local function show_session_summary(display, session_log, goals)
         display_handle = display,
         buttons        = { "OK" },
     })
+end
+
+--------------------------------------------------------------------------------
+-- SECTION 3b: GDTF CAPABILITY DETECTION
+--------------------------------------------------------------------------------
+
+-- Platform constants (forward-declared here for GDTF helpers)
+local IS_WINDOWS = package.config:sub(1, 1) == "\\"
+local NULL_DEV   = IS_WINDOWS and "NUL" or "/dev/null"
+local TMP_DIR    = IS_WINDOWS
+    and (os.getenv("TEMP") or "C:\\Temp")
+    or  "/tmp"
+
+-- Return the GrandMA3 GDTF library directory.
+local function get_gdtf_dir()
+    local sep = IS_WINDOWS and "\\" or "/"
+    if IS_WINDOWS then
+        local base = os.getenv("PROGRAMDATA") or "C:\\ProgramData"
+        return base .. sep .. "MALightingTechnology" .. sep .. "gma3_library" .. sep .. "gdtf"
+    else
+        local base = os.getenv("HOME") or "/root"
+        return base .. sep .. "MALightingTechnology" .. sep .. "gma3_library" .. sep .. "gdtf"
+    end
+end
+
+-- Locate a GDTF file for a given fixture make + model.
+-- Returns absolute path or nil if not found.
+local function find_gdtf_file(make, model)
+    if not make or not model or make == "" or model == "" then return nil end
+    local dir    = get_gdtf_dir()
+    local prefix = (make .. "@" .. model):gsub("[%.%+%^%$%(%)%[%]%%]", "%%%1")
+    local found  = nil
+    pcall(function()
+        local cmd
+        if IS_WINDOWS then
+            cmd = string.format(
+                'dir /b "%s" 2>NUL | findstr /i /b "%s@"',
+                dir, make .. "@" .. model
+            )
+        else
+            cmd = string.format(
+                'ls "%s" 2>/dev/null | grep -i "^%s@" | head -1',
+                dir, prefix
+            )
+        end
+        local h = io.popen(cmd)
+        if h then
+            local line = h:read("*l")
+            h:close()
+            if line and line ~= "" then
+                local fname = line:match("^%s*(.-)%s*$")
+                found = dir .. (IS_WINDOWS and "\\" or "/") .. fname
+            end
+        end
+    end)
+    return found
+end
+
+-- Read GDTF description.xml from a fixture's GDTF archive and return
+-- a capability table, or nil if the GDTF file cannot be read.
+local function read_gdtf_capabilities(make, model)
+    local gdtf_path = find_gdtf_file(make, model)
+    if not gdtf_path then return nil end
+
+    local xml = nil
+    pcall(function()
+        -- GDTF files are ZIP archives; unzip -p extracts to stdout
+        local cmd = string.format('unzip -p "%s" description.xml 2>%s', gdtf_path, NULL_DEV)
+        local h = io.popen(cmd)
+        if h then
+            xml = h:read("*a")
+            h:close()
+        end
+    end)
+    if not xml or xml == "" then return nil end
+
+    return {
+        -- Colour-control attributes present in the fixture
+        has_tint        = xml:find('Name="Tint"')          ~= nil,
+        has_cto         = xml:find('Name="CTO"')           ~= nil,
+        has_ctb         = xml:find('Name="CTB"')           ~= nil,
+        has_rgb         = xml:find('Name="ColorAdd_R"')    ~= nil,
+        has_color_wheel = xml:find('<Wheel[^>]*Name="[Cc]olor"') ~= nil,
+        -- Manufacturer-rated CRI if declared in GDTF
+        gdtf_cri        = tonumber(xml:match('CRI="(%d+)"')),
+    }
 end
 
 --------------------------------------------------------------------------------
@@ -921,18 +1312,12 @@ local function calibrate_group(group, x, y)
 end
 
 --------------------------------------------------------------------------------
--- SECTION 5: DATA LOGGING (local file + optional GitHub upload)
+-- SECTION 5: DATA LOGGING (local file + optional GitHub community upload)
 --------------------------------------------------------------------------------
 
--- Platform-appropriate null device and path separator.
-local IS_WINDOWS  = package.config:sub(1, 1) == "\\"
-local NULL_DEV    = IS_WINDOWS and "NUL" or "/dev/null"
-local TMP_DIR     = IS_WINDOWS
-    and (os.getenv("TEMP") or "C:\\Temp")
-    or  "/tmp"
-
--- Resolve the plugin's data directory.
+-- Resolve the plugin's root directory.
 local function get_data_dir()
+    local sep  = IS_WINDOWS and "\\" or "/"
     local base
     if IS_WINDOWS then
         base = (os.getenv("APPDATA") or (os.getenv("USERPROFILE") .. "\\AppData\\Roaming"))
@@ -944,7 +1329,6 @@ local function get_data_dir()
     return base
 end
 
--- Create a directory if it doesn't exist (silent).
 local function mkdir_p(path)
     if IS_WINDOWS then
         os.execute('mkdir "' .. path .. '" 2>' .. NULL_DEV)
@@ -953,54 +1337,50 @@ local function mkdir_p(path)
     end
 end
 
--- Read config.json for optional GitHub token.
--- Returns { github_token = "..." } or nil.
+-- Read config.json for GitHub token and username.
+-- Returns { github_token, github_username } or nil.
 local function load_config()
-    local path = get_data_dir() .. (IS_WINDOWS and "\\" or "/") .. "config.json"
-    local f = io.open(path, "r")
+    local sep  = IS_WINDOWS and "\\" or "/"
+    local path = get_data_dir() .. sep .. "config.json"
+    local f    = io.open(path, "r")
     if not f then return nil end
     local content = f:read("*a")
     f:close()
-    local token = content:match('"github_token"%s*:%s*"([^"]+)"')
+    local token    = content:match('"github_token"%s*:%s*"([^"]+)"')
+    local username = content:match('"github_username"%s*:%s*"([^"]+)"')
     if not token or token == "" then return nil end
-    return { github_token = token }
+    return { github_token = token, github_username = username }
 end
 
--- Append an entry to the local fixture_log.json file.
-local function save_fixture_log_local(entry)
-    local ok, err = pcall(function()
-        local sep   = IS_WINDOWS and "\\" or "/"
-        local dir   = get_data_dir() .. sep .. "data"
+-- Save/upsert the fixture db_entry into the local fixture_log.json.
+-- db_entry: { make, model, kelvin, cri, r9, tlci, duv, cct_measured }
+local function save_fixture_log_local(db_entry, config)
+    local ok = pcall(function()
+        local sep  = IS_WINDOWS and "\\" or "/"
+        local dir  = get_data_dir() .. sep .. "data"
         mkdir_p(dir)
-        local path  = dir .. sep .. "fixture_log.json"
+        local path = dir .. sep .. "fixture_log.json"
 
-        -- Read existing array (or start fresh)
-        local arr_str = "[]"
+        local records = {}
         local rf = io.open(path, "r")
         if rf then
-            arr_str = rf:read("*a")
+            records = json_parse_db_array(rf:read("*a"))
             rf:close()
         end
 
-        -- Append: remove trailing ']', add new entry, close
-        arr_str = arr_str:match("^%s*(.-)%s*$")
-        if arr_str == "[]" or arr_str == "" then
-            arr_str = "[" .. json_encode_entry(entry) .. "]"
-        else
-            -- Remove final ']' and append
-            arr_str = arr_str:sub(1, -2) .. "," .. json_encode_entry(entry) .. "]"
-        end
+        upsert_fixture_record(records, db_entry, config and config.github_username)
+        sort_fixture_records(records)
 
         local wf = io.open(path, "w")
         if wf then
-            wf:write(arr_str)
+            wf:write(json_encode_db_array(records))
             wf:close()
         end
     end)
-    return ok, err
+    return ok
 end
 
--- Execute curl and return stdout, or nil on error.
+-- Execute a curl command and return its stdout, or nil on error.
 local function curl_exec(cmd)
     local ok, result = pcall(function()
         local h = io.popen(cmd)
@@ -1012,79 +1392,140 @@ local function curl_exec(cmd)
     return ok and result or nil
 end
 
--- Upload a single fixture entry as a JSON file to the GitHub repository.
--- Each call creates a new file named by timestamp + fixture.
+-- Upload db_entry to the per-user community file in the GitHub repository.
+-- File path: data/community/{username}.json
+-- Uses GET → upsert → sort → PUT pattern so updates are additive.
 -- Silent on any failure.
-local function upload_fixture_log(entry, config)
-    if not config or not config.github_token then return false end
+local function upload_community_file(db_entry, config)
+    if not config or not config.github_token or not config.github_username then return false end
 
-    -- Quick connectivity check (3s timeout)
+    -- Quick connectivity check (3 s timeout)
     local check_cmd = string.format(
         'curl -s --max-time 3 -o %s -w "%%{http_code}" https://api.github.com 2>%s',
         NULL_DEV, NULL_DEV
     )
     local code = curl_exec(check_cmd)
-    if not code or code:match("%d+") ~= "200" then return false end
+    if not code or not code:match("^2%d%d") then return false end
 
-    -- Build filename: data/measurements/YYYYMMDD_HHMMSS_Fixture.json
-    local safe_name = (entry.fixture or "Unknown"):gsub("[^%w%-_]", "_")
-    local ts        = os.date("%Y%m%d_%H%M%S")
-    local filepath  = "data/measurements/" .. ts .. "_" .. safe_name .. ".json"
-    local url       = string.format(
+    local username = config.github_username
+    local filepath = "data/community/" .. username .. ".json"
+    local url      = string.format(
         "https://api.github.com/repos/%s/contents/%s",
         GITHUB_REPO, filepath
     )
+    local auth_hdr = '-H "Authorization: token ' .. config.github_token .. '"'
 
-    -- Encode content
-    local json_body   = json_encode_entry(entry)
-    local b64_content = base64_encode(json_body)
+    -- GET existing file to obtain current content + SHA
+    local get_cmd = string.format(
+        'curl -s %s -H "Accept: application/vnd.github.v3+json" "%s" 2>%s',
+        auth_hdr, url, NULL_DEV
+    )
+    local get_resp = curl_exec(get_cmd)
+    local sha      = get_resp and get_resp:match('"sha"%s*:%s*"([^"]+)"') or nil
+    local records  = {}
 
-    -- Write PUT body to temp file (avoids shell quoting nightmares)
-    local tmp_path = TMP_DIR .. (IS_WINDOWS and "\\" or "/") .. "sc_upload.json"
-    local tf = io.open(tmp_path, "w")
+    if get_resp then
+        local b64 = get_resp:match('"content"%s*:%s*"([A-Za-z0-9%+%/%=\n\\]+)"')
+        if b64 then
+            b64 = b64:gsub("\\n", ""):gsub("%s", "")
+            local content = pcall(base64_decode, b64) and base64_decode(b64) or nil
+            if content and content ~= "" then
+                records = json_parse_db_array(content)
+            end
+        end
+    end
+
+    -- Upsert and sort
+    upsert_fixture_record(records, db_entry, username)
+    sort_fixture_records(records)
+
+    -- Encode new content
+    local new_json    = json_encode_db_array(records)
+    local b64_content = base64_encode(new_json)
+
+    -- Build PUT body via temp file (avoids shell quoting issues)
+    local tmp = TMP_DIR .. (IS_WINDOWS and "\\" or "/") .. "sc_community.json"
+    local tf  = io.open(tmp, "w")
     if not tf then return false end
-    tf:write(string.format(
-        '{"message":"Add fixture measurement: %s","content":"%s"}',
-        (entry.fixture or "Unknown"):gsub('"', '\\"'),
-        b64_content
-    ))
+
+    local commit_msg = string.format(
+        "Update fixture data: %s %s @ %dK",
+        (db_entry.make  or ""):gsub('"', '\\"'),
+        (db_entry.model or ""):gsub('"', '\\"'),
+        db_entry.kelvin or 0
+    )
+    if sha then
+        tf:write(string.format(
+            '{"message":"%s","content":"%s","sha":"%s"}',
+            commit_msg, b64_content, sha
+        ))
+    else
+        tf:write(string.format(
+            '{"message":"%s","content":"%s"}',
+            commit_msg, b64_content
+        ))
+    end
     tf:close()
 
     local put_cmd = string.format(
-        'curl -s -X PUT -H "Authorization: token %s" -H "Content-Type: application/json" '
+        'curl -s -X PUT %s -H "Content-Type: application/json" '
         .. '-d @"%s" -o %s -w "%%{http_code}" "%s" 2>%s',
-        config.github_token, tmp_path, NULL_DEV, url, NULL_DEV
+        auth_hdr, tmp, NULL_DEV, url, NULL_DEV
     )
     local resp = curl_exec(put_cmd)
-    return resp and (resp == "201" or resp == "200")
+    return resp and (resp == "200" or resp == "201")
 end
 
--- Orchestrate local save and optional upload. Never interrupts calibration.
--- Shows a one-time hint if the config file is missing but does not block.
-local function log_fixture_data(display, entry, config)
-    -- Local save (always attempted)
-    local local_ok = pcall(save_fixture_log_local, entry)
+-- Orchestrate local save and optional community upload. Never interrupts calibration.
+local function log_fixture_data(display, db_entry, config)
+    if not db_entry.make or not db_entry.model then return end
 
-    -- Upload (only when config has a token)
-    if config and config.github_token then
-        pcall(upload_fixture_log, entry, config)
-    elseif local_ok then
-        -- First time: gently inform about community upload (non-blocking)
-        -- We use a lightweight check to avoid showing this every single time
-        local flag_path = get_data_dir() .. (IS_WINDOWS and "\\" or "/") .. "data" .. (IS_WINDOWS and "\\" or "/") .. ".upload_hint_shown"
+    save_fixture_log_local(db_entry, config)
+
+    if config and config.github_token and config.github_username then
+        pcall(upload_community_file, db_entry, config)
+    elseif config and config.github_token and not config.github_username then
+        -- Token present but no username configured
+        local sep      = IS_WINDOWS and "\\" or "/"
+        local flag_dir = get_data_dir() .. sep .. "data"
+        mkdir_p(flag_dir)
+        local flag_path = flag_dir .. sep .. ".username_hint_shown"
         local flag = io.open(flag_path, "r")
         if not flag then
-            -- Flag not yet written → show hint once
             local wf = io.open(flag_path, "w")
             if wf then wf:write("1"); wf:close() end
             MessageBox({
-                title   = "Community Upload",
-                message = "Fixture measurements are saved locally.\n\n"
-                        .. "To share with the community database, add\n"
-                        .. "your GitHub token to:\n\n"
-                        .. "  SekonicCalibrator/data/config.json\n\n"
-                        .. '  { "github_token": "ghp_..." }\n\n'
-                        .. "See README for details.",
+                title          = "Community Upload",
+                message        = "GitHub token found but no username set.\n\n"
+                               .. "Add to SekonicCalibrator/data/config.json:\n\n"
+                               .. '  "github_username": "your_github_username"\n\n'
+                               .. "This is needed to upload to the community database.",
+                display_handle = display,
+                buttons        = { "OK" },
+            })
+        else
+            flag:close()
+        end
+    elseif not config then
+        -- No config at all – show one-time hint
+        local sep      = IS_WINDOWS and "\\" or "/"
+        local flag_dir = get_data_dir() .. sep .. "data"
+        mkdir_p(flag_dir)
+        local flag_path = flag_dir .. sep .. ".upload_hint_shown"
+        local flag = io.open(flag_path, "r")
+        if not flag then
+            local wf = io.open(flag_path, "w")
+            if wf then wf:write("1"); wf:close() end
+            MessageBox({
+                title          = "Community Upload",
+                message        = "Fixture measurements are saved locally.\n\n"
+                               .. "To share with the community database, create\n"
+                               .. "SekonicCalibrator/data/config.json:\n\n"
+                               .. '  {\n'
+                               .. '    "github_token":    "ghp_...",\n'
+                               .. '    "github_username": "your_username"\n'
+                               .. '  }\n\n'
+                               .. "See README for details.",
                 display_handle = display,
                 buttons        = { "OK" },
             })
@@ -1106,7 +1547,7 @@ local function main(display, ...)
         local goals = get_session_goals(display)
         if not goals then return end
 
-        local config      = load_config()   -- GitHub token (may be nil)
+        local config      = load_config()
         local session_log = {}
 
         -- ── Outer loop: group by group ──────────────────────────────────────
@@ -1114,22 +1555,23 @@ local function main(display, ...)
             local group = get_group_input(display)
             if not group then break end
 
-            local fixture_model = get_fixture_model_input(display)
+            -- Get fixture make/model (patch auto-read → manual fallback)
+            local fixture_make, fixture_model = get_fixture_model_input(display, group)
 
-            local attempt      = 0
-            local last_measured    = nil
-            local last_correction  = nil
-            local applied_once     = false
+            -- Read GDTF capabilities for feature-aware hints (nil = no data)
+            local caps = read_gdtf_capabilities(fixture_make, fixture_model)
+
+            local attempt         = 0
+            local last_measured   = nil
+            local last_correction = nil
+            local applied_once    = false
 
             -- ── Inner loop: re-measure same group until happy ───────────────
             repeat
                 attempt = attempt + 1
 
                 local measured = get_measurement_params(display, attempt, goals)
-                if not measured then
-                    -- Operator cancelled mid-measurement → treat as done
-                    break
-                end
+                if not measured then break end
 
                 last_measured = measured
 
@@ -1140,7 +1582,7 @@ local function main(display, ...)
                 last_correction = correction
 
                 local apply = show_assessment(
-                    display, group, goals, measured, correction, attempt
+                    display, group, goals, measured, correction, attempt, caps
                 )
 
                 if apply then
@@ -1157,26 +1599,24 @@ local function main(display, ...)
             until ask_group_done(display, group, attempt)
             -- ─────────────────────────────────────────────────────────────────
 
-            -- Log fixture data (local + optional upload)
+            -- Log fixture data (local + optional community upload)
             if last_measured then
-                local entry = {
-                    date         = os.date("%Y-%m-%d"),
-                    fixture      = fixture_model,
-                    group        = group,
-                    cct_measured = last_measured.cct,
-                    duv_measured = last_measured.duv,
+                local db_entry = {
+                    make         = fixture_make,
+                    model        = fixture_model,
+                    kelvin       = goals.cct,
                     cri          = last_measured.cri,
                     r9           = last_measured.r9,
                     tlci         = last_measured.tlci,
-                    cct_target   = goals.cct,
-                    duv_target   = goals.duv,
-                    attempts     = attempt,
+                    duv          = last_measured.duv,
+                    cct_measured = last_measured.cct,
                 }
-                log_fixture_data(display, entry, config)
+                log_fixture_data(display, db_entry, config)
 
                 table.insert(session_log, {
                     group      = group,
-                    fixture    = fixture_model,
+                    make       = fixture_make,
+                    model      = fixture_model,
                     measured   = last_measured,
                     correction = last_correction,
                     applied    = applied_once,
