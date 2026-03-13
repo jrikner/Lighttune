@@ -1,6 +1,6 @@
 # SekonicCalibrator
 
-**Lighttune v0.3 — GrandMA3 Lua Plugin**
+**Lighttune v0.4 — GrandMA3 Lua Plugin**
 
 Calibrate fixture groups on your GrandMA3 console using measurements from a
 **Sekonic C-700, C-800, or C-7000 spectromaster**. Designed for TV and broadcast
@@ -12,15 +12,17 @@ productions where colour accuracy and consistency across groups is critical.
 
 The plugin walks you through a measurement-driven calibration workflow:
 
-1. Choose your Sekonic meter model (C-700/C-800 or C-7000)
-2. Set session goals once: target Kelvin, CRI / R9 / TLCI goals, calibration mode
-3. Select a fixture group — make/model are read automatically from the MA3 patch
-4. Enter Sekonic readings (CCT, Duv, CRI, R9, and TLCI if C-7000)
-5. Review the quality assessment, correction, and physical hints
-6. Apply — the plugin sets the corrected chromaticity on the group
-7. Re-measure and repeat until happy with the group
-8. Move to the next group
-9. End-of-session summary shows all groups and goal pass/fail
+1. Choose from the main menu: **Start Calibration** or **View Fixture History**
+2. Choose your Sekonic meter model (C-700/C-800 or C-7000)
+3. Set session goals once: target Kelvin, CRI / R9 / TLCI goals, calibration mode
+4. Select a fixture group — make/model are read automatically from the MA3 patch
+5. If historical data exists for the fixture, pre-apply the best known correction
+6. Enter Sekonic readings (CCT, Duv, CRI, R9, and TLCI if C-7000)
+7. Review the quality assessment, correction, and feature-aware hints
+8. Apply — the plugin sets the corrected chromaticity on the group
+9. Re-measure and repeat until happy with the group
+10. Move to the next group
+11. End-of-session summary shows all groups and goal pass/fail
 
 Calibration data is saved locally in a structured fixture database and
 optionally uploaded to a per-user community file on GitHub.
@@ -34,14 +36,17 @@ optionally uploaded to a per-user community file on GitHub.
 | **Two calibration modes** | Calibrate all groups to a set Kelvin target, or measure a reference group first and match everything else to it |
 | **Sekonic C-700/C-800 support** | TLCI input/goals are automatically disabled for meters that don't provide TLCI |
 | **CRI / R9 / TLCI goals** | Track each metric individually — set a minimum threshold or "as high as possible" |
-| **Gel correction hints** | When Duv is off, the assessment suggests the correct filter (1/8 → Full Plus/Minus Green) |
+| **Conditional gel hints** | Gel suggestions only shown when the fixture has color-wheel filter slots, or when no Tint channel is available (physical gel is the only option), or when deviation is extreme (> ±0.020) |
 | **Feature-aware console hints** | GDTF capabilities are read automatically — Tint channel, CTB, CTO, and color wheel corrections are only suggested when the fixture actually supports them |
 | **Fixture name from patch** | Make/model are auto-read from the MA3 patch for the selected group (manual fallback available) |
+| **GDTF manufacturer data** | Nominal CCT and CRI are read from the GDTF file and shown as context when entering measurements |
+| **Historical pre-fill** | Before the first measurement, if the fixture database contains prior data, the best known correction is pre-applied to the group |
 | **Advanced Duv target** | Default 0.000 (neutral); optional custom Duv target for special production requirements |
 | **Per-group inner loop** | Re-measure and re-apply as many times as needed before moving to the next group |
 | **Session summary** | End-of-session table listing every group, its readings, Δ Kelvin, and goal pass/fail |
-| **Fixture database** | Per-metric best-value upsert: each (make, model, kelvin) record stores the best CRI, R9, TLCI, and Duv ever measured — only updated when a new reading is better |
-| **Community database** | Optionally upload your fixture data to a per-user JSON file on GitHub for community reference |
+| **Fixture database** | Append-only: every measurement is kept; ★ marks the best CRI, R9, TLCI, and Duv entry per fixture/kelvin combination |
+| **In-console history viewer** | Browse previous measurements directly from the plugin's main menu |
+| **Community database** | Optionally upload your fixture data to a per-user JSON file on GitHub (opt-in — requires `"community_upload": true` in config.json) |
 
 ---
 
@@ -142,6 +147,11 @@ TLCI input and goals when C-700 or C-800 is selected.
 | −0.016 to −0.010 | Noticeable magenta | 1/2 Plus Green |
 | < −0.016 | Strong magenta cast | Full Plus Green |
 
+Gel hints are only shown when:
+- The fixture has colour-wheel filter slots (detected via GDTF), **or**
+- The fixture has no Tint DMX channel (physical gel is the only correction option), **or**
+- The Duv deviation exceeds ±0.020 (beyond the typical Tint channel range)
+
 ### CRI (Ra) — Colour Rendering Index
 
 | CRI | Broadcast rating |
@@ -192,9 +202,11 @@ the fixture can actually do:
 | `Tint` DMX attribute | Suggest adjusting Tint channel to correct Duv |
 | `CTB` attribute | Suggest using CTB to reduce CCT |
 | `CTO` attribute | Suggest using CTO to raise CCT |
-| Color wheel with correction slots | Suggest checking color wheel slots |
+| Color wheel with correction filter slots | Suggest checking color wheel slots |
+| Manufacturer CCT / CRI in GDTF | Shown as reference when entering measurements |
 
-Gel hints (physical external filters) are always shown regardless of GDTF data.
+Gel hints (physical external filters) are always shown when no Tint channel is
+available, and as a fallback option when color-wheel filter slots are present.
 
 ---
 
@@ -208,9 +220,10 @@ SekonicCalibrator/data/fixture_log.json
 
 ### Schema
 
-Each record represents one fixture type at one tested Kelvin. Per-metric, only
-the **best value ever measured** is kept (CRI/R9/TLCI: higher is better;
-Duv: closer to zero is better):
+The database is **append-only**: every measurement is kept as a separate record.
+Best-value flags (`best_cri`, `best_r9`, `best_tlci`, `best_duv`) are
+recomputed after every new entry and mark which record holds the best value for
+each metric within a given fixture + Kelvin combination:
 
 ```json
 [
@@ -218,24 +231,58 @@ Duv: closer to zero is better):
     "make": "Aputure",
     "model": "600X Pro",
     "kelvin": 5600,
-    "cri":  { "value": 95, "params": "5572K Duv:+0.0030", "date": "2026-03-13", "contributor": "jrikner" },
-    "r9":   { "value": 88, "params": "5572K Duv:+0.0030", "date": "2026-03-13", "contributor": "jrikner" },
-    "tlci": { "value": 91, "params": "5572K Duv:+0.0030", "date": "2026-03-13", "contributor": "jrikner" },
-    "duv":  { "value": 0.003, "params": "5572K Duv:+0.0030", "date": "2026-03-13", "contributor": "jrikner" }
+    "date": "2026-03-13",
+    "contributor": "jrikner",
+    "cct": 5572,
+    "duv": 0.0030,
+    "cri": 95,
+    "r9": 88,
+    "tlci": 91,
+    "best_cri": true,
+    "best_r9": true,
+    "best_tlci": true,
+    "best_duv": true
+  },
+  {
+    "make": "Aputure",
+    "model": "600X Pro",
+    "kelvin": 5600,
+    "date": "2026-03-20",
+    "contributor": "jrikner",
+    "cct": 5581,
+    "duv": 0.0015,
+    "cri": 93,
+    "r9": 91,
+    "best_r9": true,
+    "best_duv": true
   }
 ]
 ```
 
-**Upsert rules:**
-- Same make + model + kelvin → only update a metric if the new value is better
-- New kelvin for an existing fixture → add as a new record
-- Local file is sorted: make A→Z, then model A→Z, then kelvin low→high
+**Rules:**
+- Every measurement is always appended — nothing is overwritten
+- `best_*` flags are omitted when false (only written when `true`)
+- Records are sorted: make A→Z, then model A→Z, then kelvin low→high, then date old→new
+- Multiple records may share `best_*` flags for different metrics (e.g., record A has `best_cri`, record B has `best_r9`)
+
+---
+
+## In-Console Fixture History Viewer
+
+From the plugin's main menu, select **View Fixture History** to browse all
+previously recorded measurements without starting a calibration session.
+
+- Search by make or model name (partial match)
+- Results are grouped by Kelvin, with ★ marking the best value for each metric
+- Shows all historical entries so you can track how a fixture performs over time
 
 ---
 
 ## Community Fixture Database
 
 ### Enabling GitHub Upload
+
+Community upload is **opt-in** and disabled by default.
 
 1. Create a **GitHub personal access token** with `contents: write` permission:
    `https://github.com/settings/tokens`
@@ -244,8 +291,9 @@ Duv: closer to zero is better):
    and fill in your details:
    ```json
    {
-     "github_token":    "ghp_your_token_here",
-     "github_username": "your_github_username"
+     "github_token":     "ghp_your_token_here",
+     "github_username":  "your_github_username",
+     "community_upload": true
    }
    ```
 
@@ -274,7 +322,7 @@ make A→Z → model A→Z → kelvin low→high.
 lua5.4 test_color_math.lua
 ```
 
-Expected: `118 passed, 0 failed`
+Expected: `126 passed, 0 failed`
 
 ---
 
