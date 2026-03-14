@@ -55,8 +55,7 @@ optionally uploaded to a per-user community file on GitHub.
 - GrandMA3 console (software v1.6 or later recommended)
 - Sekonic C-700, C-800, or C-7000 spectromaster
 - Fixture groups configured in your showfile
-- `curl` available on the console OS (required for community upload only)
-- `unzip` available (required for GDTF capability detection only)
+- `unzip` available on the console OS (required for GDTF capability detection only)
 
 ---
 
