@@ -46,7 +46,7 @@ optionally uploaded to a per-user community file on GitHub.
 | **Session summary** | End-of-session table listing every group, its readings, Δ Kelvin, and goal pass/fail |
 | **Fixture database** | Append-only: every measurement is kept; ★ marks the best CRI, R9, TLCI, and Duv entry per fixture/kelvin combination |
 | **In-console history viewer** | Browse previous measurements directly from the plugin's main menu |
-| **Community database** | Optionally upload your fixture data to a per-user JSON file on GitHub (opt-in — requires `"community_upload": true` in config.json) |
+| **Local fixture database** | Append-only local log saved to `data/fixture_log.json`; export manually to share with others |
 
 ---
 
@@ -55,7 +55,6 @@ optionally uploaded to a per-user community file on GitHub.
 - GrandMA3 console (software v1.6 or later recommended)
 - Sekonic C-700, C-800, or C-7000 spectromaster
 - Fixture groups configured in your showfile
-- `unzip` available on the console OS (required for GDTF capability detection only)
 
 ---
 
@@ -275,34 +274,25 @@ previously recorded measurements without starting a calibration session.
 
 ---
 
-## Community Fixture Database
+## Fixture Database
 
-### Local data file
+Every measurement is saved locally to `data/fixture_log.json` in the plugin folder.
+★ marks the best-per-metric entry for each fixture/kelvin combination.
 
-All measurements are saved to `data/fixture_log.json` inside the plugin folder.
-This file is plain JSON and can be shared manually.
+To share data with the community, export `fixture_log.json` manually.
 
-### Sharing with the community
+### Optional: `config.json`
 
-GrandMA3's Lua environment does not support HTTPS connections (only `lua.ftp`
-plain-FTP is available), so automatic upload to the GitHub REST API is not
-possible from within the plugin. To contribute your fixture data:
-
-1. Locate `fixture_log.json` in `SekonicCalibrator/data/` on the console.
-2. Open a pull request or issue on the project GitHub page and attach the file.
-
-### Contributor name in records
-
-To have your name recorded as the contributor in the local database, create
-`config.json` in the plugin folder (not inside `data/`):
+Copy `data/config.json.example` to `data/config.json` to set your GitHub username
+(stored as `contributor` in each fixture record) and bridge connection details:
 
 ```json
 {
-  "github_username": "your_github_username"
+  "github_username": "your_github_username",
+  "bridge_ip":       "192.168.1.50",
+  "bridge_port":     8765
 }
 ```
-
-If no config file is present, records are saved with `contributor: "local"`.
 
 `config.json` is listed in `.gitignore` and will never be committed.
 

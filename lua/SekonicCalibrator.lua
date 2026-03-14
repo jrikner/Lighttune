@@ -384,6 +384,7 @@ local bridge_fetch_measurement
 local goals_met
 local run_bridge_setup
 local show_bridge_status
+local _run_trigger_discovery
 --------------------------------------------------------------------------------
 
 local function get_number_input(display, title, message, min_val, max_val)
