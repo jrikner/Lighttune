@@ -5,28 +5,21 @@ This module communicates with the C-7000 directly over USB without
 requiring the official Windows-only SDK. It uses the raw USB HID protocol
 which works on Raspberry Pi (Linux), macOS, and Windows.
 
-IMPORTANT — USB PROTOCOL CAPTURE REQUIRED:
-The C-7000's USB HID command protocol is not publicly documented.
-Before this module can work you must capture the USB traffic once:
+SETUP — use the built-in wizard (no Wireshark required):
+  1. GET  /discover       – finds VID/PID automatically, saves device_config.json
+  2. POST /capture        – user presses MEASURE once; bridge captures the response format
+  3. POST /learn_trigger  – bridge probes candidate HID commands to find the remote trigger
 
-  1. On a Windows PC, install Wireshark + USBPcap (https://desowin.org/usbpcap/)
-  2. Connect your C-7000 via USB and run the Sekonic C-700/7000 Utility Software
-  3. In Wireshark, start a capture on the USBPcap interface that shows the C-7000
-  4. In the Utility Software, press "Measure" and watch the packets in Wireshark
-  5. Filter: usb.transfer_type == 0x03 (interrupt transfers = HID data)
-  6. Identify the OUT packet sent to trigger a measurement
-  7. Identify the IN packets returned with measurement data
-  8. Fill in the constants below
+After step 3 succeeds, POST /measure triggers measurements with no physical button press.
+All discovered values are persisted in device_config.json; restarting the server reloads them.
 
-Once you have the protocol, set:
-  TRIGGER_CMD     — bytes sent to trigger a measurement
-  RESPONSE_LENGTH — expected response packet length
-  And update _parse() to extract the values from the response bytes.
-
-Alternatively, use the built-in setup wizard:
-  1. GET  /discover  – finds VID/PID automatically, saves device_config.json
-  2. POST /capture   – listens for a manual meter press, captures the response
-  The server self-configures from device_config.json on next restart.
+FALLBACK (advanced) — if /learn_trigger fails:
+  Use Wireshark + USBPcap on Windows to capture the trigger command manually:
+  1. Install Wireshark + USBPcap (https://desowin.org/usbpcap/)
+  2. Connect C-7000, run the Sekonic Utility Software, capture the USBPcap interface
+  3. Filter: usb.transfer_type == 0x03 (interrupt transfers = HID data)
+  4. Identify the OUT packet that triggers a measurement; copy the bytes
+  5. Set TRIGGER_CMD below to those bytes and restart the server
 """
 
 import json
@@ -64,7 +57,10 @@ INTERFACE    = 0
 ENDPOINT_OUT = 0x01   # TODO: verify from Wireshark capture
 ENDPOINT_IN  = 0x81   # TODO: verify from Wireshark capture
 
-TRIGGER_CMD     = bytes([0x00])   # TODO: replace with captured trigger bytes
+# Trigger command — loaded from device_config.json if POST /learn_trigger succeeded,
+# otherwise defaults to the single-byte placeholder (physical button press required).
+_trigger_hex = _cfg.get("trigger_cmd_hex", "")
+TRIGGER_CMD     = bytes.fromhex(_trigger_hex) if _trigger_hex else bytes([0x00])
 RESPONSE_LENGTH = _cfg.get("response_length", 64)
 
 MEASUREMENT_TIMEOUT_MS = 30_000
@@ -81,14 +77,18 @@ class C7000HID:
 
     def __init__(self):
         self._dev = None
+        self._trigger_cmd = TRIGGER_CMD
 
     def connect(self) -> bool:
         """Find and open the C-7000 USB device. Returns True on success."""
-        # Reload config on each connect attempt so a new device_config.json
-        # written by /discover takes effect without restarting the server.
+        # Reload config on each connect attempt so changes written by /discover,
+        # /capture, or /learn_trigger take effect without restarting the server.
         cfg = _load_cfg()
         vid = cfg.get("vendor_id", VENDOR_ID)
         pid = cfg.get("product_id", PRODUCT_ID)
+        # Update the effective trigger command from config if available
+        trigger_hex = cfg.get("trigger_cmd_hex", "")
+        self._trigger_cmd = bytes.fromhex(trigger_hex) if trigger_hex else TRIGGER_CMD
         if vid == 0 or pid == 0:
             raise RuntimeError(
                 "VID/PID not configured. Run GET /discover to auto-detect, "
@@ -125,8 +125,8 @@ class C7000HID:
         if self._dev is None:
             raise RuntimeError("meter_not_connected")
 
-        # Send trigger command
-        self._dev.write(ENDPOINT_OUT, TRIGGER_CMD)
+        # Send trigger command (loaded from device_config.json if /learn_trigger succeeded)
+        self._dev.write(ENDPOINT_OUT, self._trigger_cmd)
 
         # Wait for response
         start = time.time()
@@ -187,3 +187,25 @@ class C7000HID:
         if tlci is not None:
             result["tlci"] = int(tlci)
         return result
+
+    def probe_trigger(self, cmd: bytes, timeout_ms: int = 4000) -> dict | None:
+        """
+        Send `cmd` to the OUT endpoint and listen for a measurement response.
+
+        Used by POST /learn_trigger to auto-discover the remote trigger command.
+        Returns a parsed measurement dict if the response looks valid, else None.
+        Never raises — all exceptions are swallowed so the caller can iterate.
+        """
+        if self._dev is None:
+            return None
+        try:
+            self._dev.write(ENDPOINT_OUT, cmd, timeout=2000)
+            raw = bytes(self._dev.read(ENDPOINT_IN, RESPONSE_LENGTH,
+                                       timeout=timeout_ms))
+            parsed = self._parse(raw)
+            # Sanity-check: must be a plausible light-meter measurement
+            if 1667 <= parsed["cct"] <= 25000 and -0.05 <= parsed["duv"] <= 0.05:
+                return parsed
+        except Exception:
+            pass
+        return None
