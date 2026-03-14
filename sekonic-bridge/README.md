@@ -166,7 +166,13 @@ From the GrandMA3 console (or any computer on the network):
 # Check bridge status
 curl http://<pi-ip>:8765/status
 
-# Trigger a test measurement (meter must be connected)
+# Auto-discover VID/PID (C-7000 must be connected to the Pi)
+curl http://<pi-ip>:8765/discover
+
+# Capture measurement protocol (press meter button within 30 s)
+curl -X POST http://<pi-ip>:8765/capture
+
+# Trigger a test measurement (requires trigger command captured or meter button press)
 curl -X POST http://<pi-ip>:8765/measure
 ```
 
@@ -178,7 +184,9 @@ Expected status response:
   "connected": true,
   "uptime_s": 3600,
   "last_error": null,
-  "version": "1.0.0"
+  "version": "1.0.0",
+  "device_configured": true,
+  "protocol_captured": true
 }
 ```
 
@@ -211,31 +219,72 @@ The calibration session pauses for ~2–5 seconds while the bridge triggers the 
 
 ## USB Protocol Note
 
-The C-7000 USB HID protocol is not publicly documented. The `meter_c7000_hid.py` file contains placeholder values that **must be filled in** after capturing USB traffic once.
+The C-7000 USB HID protocol is not publicly documented. The `meter_c7000_hid.py` file contains placeholder values that must be filled in after capturing USB traffic once. The bridge includes an **auto-discovery wizard** that handles VID/PID and response-format detection automatically.
 
-### How to capture the protocol
+### Option A — Auto-discovery (recommended)
 
-**On Windows (recommended):**
-1. Install [Wireshark](https://www.wireshark.org/) + [USBPcap](https://desowin.org/usbpcap/) (included with Wireshark installer)
+The bridge can discover and configure itself from the GrandMA3 plugin:
+
+1. In SekonicCalibrator, open **Bridge Status** from the main menu
+2. Click **Run Setup** if the device is not yet configured
+3. The wizard calls `GET /discover` to find the VID/PID
+4. Then calls `POST /capture` — **press the MEASURE button on the C-7000**
+5. The bridge captures the raw response, auto-parses it, and saves `device_config.json`
+
+Or run the same steps manually with curl:
+
+```bash
+# Step 1 — discover VID/PID
+curl http://<pi-ip>:8765/discover
+
+# Step 2 — press MEASURE on the meter, then run:
+curl -X POST http://<pi-ip>:8765/capture
+```
+
+> **Note:** Auto-capture discovers the response format (what the meter sends back). The trigger command (what the host sends to *start* a measurement remotely) still requires a Wireshark capture — see Option B. Without it, the operator presses the physical button on the C-7000 to initiate each measurement.
+
+Or run the standalone discovery script on the Pi:
+
+```bash
+python3 discover_device.py
+```
+
+This prints all USB devices and saves the Sekonic VID/PID to `device_config.json`.
+
+### Option B — Manual Wireshark capture (for full remote-trigger support)
+
+To capture the trigger command (allows the bridge to start measurements remotely without the operator pressing the meter button):
+
+#### Step 1 — Find VID/PID
+
+| Platform | Command |
+|----------|---------|
+| **Raspberry Pi / Linux** | `lsusb` — shows `ID vendor:product` |
+| **macOS** | `system_profiler SPUSBDataType` — shows Vendor ID and Product ID |
+| **Windows** | Device Manager → right-click C-7000 → Properties → Details → Hardware IDs: `VID_XXXX&PID_XXXX` |
+
+Or use the auto-discovery script: `python3 discover_device.py`
+
+#### Step 2 — Capture HID traffic
+
+| Platform | Tool | Notes |
+|----------|------|-------|
+| **Windows (recommended)** | Wireshark + USBPcap | Easiest; no OS changes needed; USBPcap is bundled with Wireshark |
+| **Linux / Raspberry Pi** | Wireshark + usbmon | `sudo modprobe usbmon`, then capture the `usbmon` interface in Wireshark |
+| **macOS** | Not recommended | Requires disabling System Integrity Protection (SIP); use Windows or the Pi instead |
+
+**Windows capture steps:**
+1. Install [Wireshark](https://www.wireshark.org/) (includes USBPcap)
 2. Connect the C-7000 via USB
 3. Open Wireshark → select the USBPcap interface showing the C-7000
-4. Open the Sekonic C-700/7000 Utility Software
-5. Click **"Measure"** in the utility
-6. In Wireshark, filter: `usb.transfer_type == 3` (interrupt = HID packets)
-7. Identify:
-   - The **OUT packet** sent to trigger a measurement (host → device)
-   - The **IN packet(s)** returned with measurement data (device → host)
-8. Update `meter_c7000_hid.py`:
-   - Set `VENDOR_ID` and `PRODUCT_ID` (find with `lsusb` or Device Manager)
-   - Set `TRIGGER_CMD` to the captured bytes
-   - Update `_parse()` to extract CCT/Duv/CRI/R9/TLCI from the response bytes
-
-**On macOS:**
-```bash
-# Enable Bluetooth/USB packet logging via Xcode Instruments or:
-sudo tcpdump -i usbmon0 -w sekonic.pcap
-```
-Then open `sekonic.pcap` in Wireshark and follow the same steps.
+4. Open the Sekonic C-700/7000 Utility Software and click **"Measure"**
+5. Filter: `usb.transfer_type == 3` (interrupt = HID packets)
+6. Identify:
+   - The **OUT packet** — bytes sent host → device to trigger a measurement
+   - The **IN packet(s)** — measurement data returned by the meter
+7. Update `meter_c7000_hid.py`:
+   - `TRIGGER_CMD` — set to the captured OUT bytes
+   - `_parse()` — update offsets to match your IN packet layout
 
 ---
 

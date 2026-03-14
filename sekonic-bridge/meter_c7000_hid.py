@@ -18,45 +18,60 @@ Before this module can work you must capture the USB traffic once:
   7. Identify the IN packets returned with measurement data
   8. Fill in the constants below
 
-Alternatively on macOS:
-  brew install wireshark
-  sudo tcpdump -i usbmon0 -w capture.pcap   (or use the system Bluetooth/USB logger)
-
 Once you have the protocol, set:
   TRIGGER_CMD     — bytes sent to trigger a measurement
   RESPONSE_LENGTH — expected response packet length
   And update _parse() to extract the values from the response bytes.
+
+Alternatively, use the built-in setup wizard:
+  1. GET  /discover  – finds VID/PID automatically, saves device_config.json
+  2. POST /capture   – listens for a manual meter press, captures the response
+  The server self-configures from device_config.json on next restart.
 """
+
+import json
+import struct
+import time
+from pathlib import Path
 
 import usb.core
 import usb.util
-import struct
-import time
 
 
-# ── TODO: fill in after USB protocol capture ─────────────────────────────────
+# ── Device configuration (overridden by device_config.json if present) ────────
+#
+# device_config.json is written by GET /discover and POST /capture on the server.
+# If it exists, its values take priority over the TODO constants below.
 
-# USB vendor/product IDs for the Sekonic C-7000.
-# Find these with: lsusb (Linux) or Device Manager (Windows) after connecting meter.
-VENDOR_ID  = 0x0000   # TODO: replace with actual vendor ID
-PRODUCT_ID = 0x0000   # TODO: replace with actual product ID
+_DEVICE_CONFIG_PATH = Path(__file__).parent / "device_config.json"
 
-# HID interface number (usually 0)
-INTERFACE = 0
 
-# HID endpoint addresses (find via: usb.core.find(...).configurations()[0])
-# Typical: 0x01 = OUT (host→device), 0x81 = IN (device→host)
-ENDPOINT_OUT = 0x01   # TODO: verify
-ENDPOINT_IN  = 0x81   # TODO: verify
+def _load_cfg() -> dict:
+    if _DEVICE_CONFIG_PATH.exists():
+        try:
+            return json.loads(_DEVICE_CONFIG_PATH.read_text())
+        except Exception:
+            pass
+    return {}
 
-# Command bytes that trigger a single measurement (replace with captured bytes)
-TRIGGER_CMD = bytes([0x00])   # TODO: replace with actual trigger command
 
-# Expected length of the response packet from the meter
-RESPONSE_LENGTH = 64           # TODO: adjust to actual packet size
+_cfg = _load_cfg()
 
-# Timeout waiting for measurement response (milliseconds)
+VENDOR_ID  = _cfg.get("vendor_id",  0x0000)   # TODO: set after running /discover
+PRODUCT_ID = _cfg.get("product_id", 0x0000)   # TODO: set after running /discover
+
+INTERFACE    = 0
+ENDPOINT_OUT = 0x01   # TODO: verify from Wireshark capture
+ENDPOINT_IN  = 0x81   # TODO: verify from Wireshark capture
+
+TRIGGER_CMD     = bytes([0x00])   # TODO: replace with captured trigger bytes
+RESPONSE_LENGTH = _cfg.get("response_length", 64)
+
 MEASUREMENT_TIMEOUT_MS = 30_000
+
+# Parse parameters discovered during POST /capture (empty = use _parse() defaults)
+_PARSE_FMT    = _cfg.get("parse_fmt",    "<HhBBB")
+_PARSE_OFFSET = _cfg.get("parse_offset", 0)
 
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -69,12 +84,17 @@ class C7000HID:
 
     def connect(self) -> bool:
         """Find and open the C-7000 USB device. Returns True on success."""
-        if VENDOR_ID == 0 or PRODUCT_ID == 0:
+        # Reload config on each connect attempt so a new device_config.json
+        # written by /discover takes effect without restarting the server.
+        cfg = _load_cfg()
+        vid = cfg.get("vendor_id", VENDOR_ID)
+        pid = cfg.get("product_id", PRODUCT_ID)
+        if vid == 0 or pid == 0:
             raise RuntimeError(
-                "VENDOR_ID and PRODUCT_ID not set in meter_c7000_hid.py. "
-                "See the USB protocol capture instructions at the top of the file."
+                "VID/PID not configured. Run GET /discover to auto-detect, "
+                "or set VENDOR_ID/PRODUCT_ID in meter_c7000_hid.py."
             )
-        dev = usb.core.find(idVendor=VENDOR_ID, idProduct=PRODUCT_ID)
+        dev = usb.core.find(idVendor=vid, idProduct=pid)
         if dev is None:
             return False
         # Detach kernel HID driver on Linux so we can claim the interface
@@ -135,19 +155,35 @@ class C7000HID:
           bytes 5:    R9 (uint8)
           bytes 6:    TLCI (uint8)
         """
-        # TODO: replace struct format and offsets with real values from capture
-        if len(data) < 7:
-            raise ValueError(f"Response packet too short: {len(data)} bytes")
+        # Use format/offset from device_config.json if protocol was captured.
+        # Falls back to the placeholder layout when no capture data is available.
+        cfg = _load_cfg()
+        fmt    = cfg.get("parse_fmt",    _PARSE_FMT)
+        offset = cfg.get("parse_offset", _PARSE_OFFSET)
 
-        cct_raw, duv_raw, cri, r9, tlci = struct.unpack_from("<HhBBB", data, offset=0)
+        size = struct.calcsize(fmt)
+        if len(data) < offset + size:
+            raise ValueError(
+                f"Response packet too short: {len(data)} bytes "
+                f"(need {offset + size} for fmt={fmt!r} at offset={offset})"
+            )
+
+        values = struct.unpack_from(fmt, data, offset=offset)
+        # Expected field order: cct, duv_raw, cri, r9[, tlci]
+        if len(values) < 4:
+            raise ValueError(f"Unexpected struct field count: {len(values)}")
+        cct_raw, duv_raw, cri, r9 = values[:4]
+        tlci = values[4] if len(values) > 4 else None
 
         cct = int(cct_raw)
         duv = round(duv_raw / 10000.0, 4)
 
-        return {
+        result = {
             "cct":  cct,
             "duv":  duv,
             "cri":  int(cri),
             "r9":   int(r9),
-            "tlci": int(tlci),
         }
+        if tlci is not None:
+            result["tlci"] = int(tlci)
+        return result
