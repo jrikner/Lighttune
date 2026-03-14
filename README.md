@@ -46,7 +46,7 @@ optionally uploaded to a per-user community file on GitHub.
 | **Session summary** | End-of-session table listing every group, its readings, Δ Kelvin, and goal pass/fail |
 | **Fixture database** | Append-only: every measurement is kept; ★ marks the best CRI, R9, TLCI, and Duv entry per fixture/kelvin combination |
 | **In-console history viewer** | Browse previous measurements directly from the plugin's main menu |
-| **Community database** | Optionally upload your fixture data to a per-user JSON file on GitHub (opt-in — requires `"community_upload": true` in config.json) |
+| **Local fixture database** | Append-only local log saved to `data/fixture_log.json`; export manually to share with others |
 
 ---
 
@@ -55,8 +55,6 @@ optionally uploaded to a per-user community file on GitHub.
 - GrandMA3 console (software v1.6 or later recommended)
 - Sekonic C-700, C-800, or C-7000 spectromaster
 - Fixture groups configured in your showfile
-- `curl` available on the console OS (required for community upload only)
-- `unzip` available (required for GDTF capability detection only)
 
 ---
 
@@ -278,30 +276,25 @@ previously recorded measurements without starting a calibration session.
 
 ---
 
-## Community Fixture Database
+## Fixture Database
 
-### Enabling GitHub Upload
+Every measurement is saved locally to `data/fixture_log.json` in the plugin folder.
+★ marks the best-per-metric entry for each fixture/kelvin combination.
 
-Community upload is **opt-in** and disabled by default.
+To share data with the community, export `fixture_log.json` manually.
 
-1. Create a **GitHub personal access token** with `contents: write` permission:
-   `https://github.com/settings/tokens`
+### Optional: `config.json`
 
-2. Copy `data/config.json.example` to `data/config.json` in the plugin folder
-   and fill in your details:
-   ```json
-   {
-     "github_token":     "ghp_your_token_here",
-     "github_username":  "your_github_username",
-     "community_upload": true
-   }
-   ```
+Copy `data/config.json.example` to `data/config.json` to set your GitHub username
+(stored as `contributor` in each fixture record) and bridge connection details:
 
-3. The plugin will upload each fixture record to your personal file under
-   `data/community/{username}.json` in this repository.
-
-Community files are sorted: GitHub usernames A→Z, then within each user's file:
-make A→Z → model A→Z → kelvin low→high.
+```json
+{
+  "github_username": "your_github_username",
+  "bridge_ip":       "192.168.1.50",
+  "bridge_port":     8765
+}
+```
 
 `config.json` is listed in `.gitignore` and will never be committed.
 
