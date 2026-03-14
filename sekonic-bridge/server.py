@@ -6,11 +6,13 @@ Exposes a simple REST API over the show network so the GrandMA3 Lua plugin
 can trigger measurements on the Sekonic C-7000 and read values remotely.
 
 Endpoints:
-  GET  /status    — health check, meter connection state
-  POST /measure   — trigger a measurement, blocks until complete (up to 35s)
-  GET  /discover  — scan USB, find Sekonic meter, save VID/PID to device_config.json
-  POST /capture   — listen passively for one HID report (user presses meter button),
-                    capture raw bytes, attempt auto-parse, save to device_config.json
+  GET  /status        — health check, meter connection state
+  POST /measure       — trigger a measurement, blocks until complete (up to 35s)
+  GET  /discover      — scan USB, find Sekonic meter, save VID/PID to device_config.json
+  POST /capture       — listen passively for one HID report (user presses meter button),
+                        capture raw bytes, attempt auto-parse, save to device_config.json
+  POST /learn_trigger — probe candidate HID trigger commands to discover the remote
+                        trigger byte sequence; saves result to device_config.json
 
 Usage:
   python3 server.py [--host 0.0.0.0] [--port 8765] [--mock]
@@ -75,6 +77,31 @@ def _is_device_configured() -> bool:
 def _is_protocol_captured() -> bool:
     cfg = _load_device_config()
     return bool(cfg.get("protocol_captured"))
+
+
+def _is_trigger_discovered() -> bool:
+    cfg = _load_device_config()
+    return bool(cfg.get("trigger_discovered"))
+
+
+def _build_trigger_candidates() -> list:
+    """
+    Return a prioritised list of candidate HID trigger byte sequences.
+    Shortest and most common patterns first; the probe loop stops as soon as
+    one produces a valid measurement response.
+    """
+    cands = []
+    # 1-byte: report IDs 0x00–0x0F (most HID light meters use a single byte)
+    for b in range(0x10):
+        cands.append(bytes([b]))
+    # 2-byte: leading report ID 0x00 or 0x01 with command byte
+    for b in range(0x10):
+        cands.append(bytes([0x00, b]))
+        cands.append(bytes([0x01, b]))
+    # 4-byte patterns common for Sekonic-family HID (command in byte 3)
+    for cmd in [0x01, 0x02, 0x03, 0x04]:
+        cands.append(bytes([0x00, 0x00, 0x00, cmd]))
+    return cands
 
 
 # ── meter backend ─────────────────────────────────────────────────────────────
@@ -150,8 +177,9 @@ async def status():
         "uptime_s":           int(time.time() - _start_time),
         "last_error":         _last_error,
         "version":            "1.0.0",
-        "device_configured":  _is_device_configured() or _use_mock_global,
-        "protocol_captured":  _is_protocol_captured() or _use_mock_global,
+        "device_configured":  _is_device_configured()  or _use_mock_global,
+        "protocol_captured":  _is_protocol_captured()  or _use_mock_global,
+        "trigger_discovered": _is_trigger_discovered() or _use_mock_global,
     }
 
 
@@ -415,6 +443,87 @@ async def capture():
 
     log.info("Capture complete: %d bytes, parsed=%s", len(raw), parsed is not None)
     return JSONResponse(content=result)
+
+
+@app.post("/learn_trigger")
+async def learn_trigger():
+    """
+    Discover the USB HID trigger command for the C-7000 without Wireshark.
+
+    Iterates through candidate byte sequences, sends each to the meter's OUT
+    endpoint, and checks whether the meter responds with valid measurement data.
+    The first candidate that elicits a plausible response is saved to
+    device_config.json as trigger_cmd_hex and trigger_discovered=true.
+
+    Returns immediately if the trigger is already known.
+    Times out after ~2 minutes (covers all candidates with 4-second probes).
+    """
+    if _use_mock_global:
+        cfg = _load_device_config()
+        cfg.update({"trigger_cmd_hex": "01", "trigger_discovered": True})
+        _save_device_config(cfg)
+        return {"success": True, "already_known": False,
+                "trigger_cmd_hex": "01", "attempts": 1}
+
+    cfg = _load_device_config()
+    if cfg.get("trigger_discovered"):
+        return {"success": True, "already_known": True,
+                "trigger_cmd_hex": cfg["trigger_cmd_hex"]}
+
+    if not cfg.get("vendor_id") or not cfg.get("product_id"):
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "device_not_discovered",
+                    "hint": "Call GET /discover first to find the VID/PID"}
+        )
+    if not cfg.get("protocol_captured"):
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "protocol_not_captured",
+                    "hint": "Call POST /capture first to capture the response format"}
+        )
+
+    from meter_c7000_hid import C7000HID
+
+    candidates = _build_trigger_candidates()
+    loop = asyncio.get_event_loop()
+
+    async with _measurement_lock:
+        for idx, cmd_bytes in enumerate(candidates):
+            def _probe(cmd=cmd_bytes):
+                m = C7000HID()
+                try:
+                    if not m.connect():
+                        return None
+                    return m.probe_trigger(cmd, timeout_ms=4000)
+                except Exception:
+                    return None
+                finally:
+                    try:
+                        m.disconnect()
+                    except Exception:
+                        pass
+
+            result = await loop.run_in_executor(None, _probe)
+            if result is not None:
+                hex_str = cmd_bytes.hex()
+                cfg.update({"trigger_cmd_hex": hex_str, "trigger_discovered": True})
+                _save_device_config(cfg)
+                log.info("Remote trigger discovered: 0x%s (attempt %d)", hex_str, idx + 1)
+                return {"success": True, "trigger_cmd_hex": hex_str,
+                        "attempts": idx + 1}
+
+    log.warning("learn_trigger: no candidate succeeded after %d attempts", len(candidates))
+    return JSONResponse(
+        status_code=404,
+        content={
+            "success": False,
+            "error":   "trigger_not_found",
+            "message": "No candidate triggered a valid measurement. "
+                       "Physical button press is still required. "
+                       "See README for Wireshark capture fallback.",
+        }
+    )
 
 
 @app.post("/measure")

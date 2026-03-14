@@ -1189,20 +1189,22 @@ bridge_fetch_measurement = function(config)
     return { cct=cct, duv=duv, cri=cri, r9=r9, tlci=tlci }
 end
 
--- Check bridge connectivity. Returns: reachable(bool), meter_connected(bool), meter_name(str|nil),
---   device_configured(bool), protocol_captured(bool).
+-- Check bridge connectivity.
+-- Returns: reachable(bool), meter_connected(bool), meter_name(str|nil),
+--          device_configured(bool), protocol_captured(bool), trigger_discovered(bool).
 local function bridge_check_status(config)  -- does not need forward decl (only called by Section 2c code)
     if not config or not config.bridge_ip or config.bridge_ip == "" then
-        return false, false, nil, false, false
+        return false, false, nil, false, false, false
     end
     local status, body = _http_request(
         "GET", config.bridge_ip, config.bridge_port or 8765, "/status", 5)
-    if not status or status ~= 200 then return false, false, nil, false, false end
-    local connected   = body:find('"connected"%s*:%s*true')           ~= nil
-    local dev_cfg     = body:find('"device_configured"%s*:%s*true')   ~= nil
-    local proto_cap   = body:find('"protocol_captured"%s*:%s*true')   ~= nil
-    local meter       = body:match('"meter"%s*:%s*"([^"]+)"')
-    return true, connected, meter, dev_cfg, proto_cap
+    if not status or status ~= 200 then return false, false, nil, false, false, false end
+    local connected    = body:find('"connected"%s*:%s*true')            ~= nil
+    local dev_cfg      = body:find('"device_configured"%s*:%s*true')    ~= nil
+    local proto_cap    = body:find('"protocol_captured"%s*:%s*true')    ~= nil
+    local trigger_disc = body:find('"trigger_discovered"%s*:%s*true')   ~= nil
+    local meter        = body:match('"meter"%s*:%s*"([^"]+)"')
+    return true, connected, meter, dev_cfg, proto_cap, trigger_disc
 end
 
 -- Check whether all session goals are met by the measurement.
@@ -1217,6 +1219,48 @@ goals_met = function(measured, goals)
     if goals.tlci and goals.tlci.mode == GOAL_MIN
        and measured.tlci and measured.tlci < goals.tlci.value then return false end
     return true
+end
+
+-- Run POST /learn_trigger and show result. Used by setup wizard Step 3 and
+-- the "Discover Remote Trigger" button in show_bridge_status.
+_run_trigger_discovery = function(display, config)
+    local lt_status, lt_body = _http_request(
+        "POST", config.bridge_ip, config.bridge_port or 8765,
+        "/learn_trigger", 120)   -- 2-min timeout covers all candidates
+
+    local lt_ok  = lt_status == 200
+                   and lt_body:find('"success"%s*:%s*true') ~= nil
+    local lt_hex = lt_body and
+                   lt_body:match('"trigger_cmd_hex"%s*:%s*"([^"]+)"') or "?"
+
+    if lt_ok then
+        MessageBox({
+            title   = "Remote Trigger Found",
+            message = string.format(
+                "Full remote trigger discovered (command: 0x%s).\n\n"
+                .."Bridge is now fully hands-free \xe2\x80\x93 measurements\n"
+                .."start automatically without pressing any button.",
+                lt_hex:upper()),
+            display_handle = display,
+            buttons = {"OK"},
+        })
+    else
+        local lt_err = lt_body and
+                       lt_body:match('"error"%s*:%s*"([^"]+)"') or "no_response"
+        MessageBox({
+            title   = "Trigger Not Found",
+            message = string.format(
+                "Could not auto-discover the remote trigger.\n\n"
+                .."Error: %s\n\n"
+                .."Bridge will use physical button press mode:\n"
+                .."the operator presses MEASURE on the C-7000\n"
+                .."and the bridge captures the result.\n\n"
+                .."You can retry from Bridge Status at any time,\n"
+                .."or see the README for the Wireshark fallback.", lt_err),
+            display_handle = display,
+            buttons = {"OK"},
+        })
+    end
 end
 
 -- Show bridge connectivity status and optionally launch the setup wizard.
@@ -1236,7 +1280,7 @@ show_bridge_status = function(display, config)
         return
     end
 
-    local reachable, connected, meter, dev_cfg, proto_cap =
+    local reachable, connected, meter, dev_cfg, proto_cap, trigger_disc =
         bridge_check_status(config)
 
     if not reachable then
@@ -1248,7 +1292,7 @@ show_bridge_status = function(display, config)
                 .."  \xe2\x80\xa2 Bridge Pi is powered and on the network\n"
                 .."  \xe2\x80\xa2 IP in config.json is correct\n"
                 .."  \xe2\x80\xa2 Bridge service is running\n\n"
-                .."Test: curl http://%s:%d/status",
+                .."From the Pi terminal: curl http://%s:%d/status",
                 config.bridge_ip, config.bridge_port or 8765,
                 config.bridge_ip, config.bridge_port or 8765),
             display_handle = display,
@@ -1263,12 +1307,14 @@ show_bridge_status = function(display, config)
         .."Meter:    %s\n"
         .."Status:   %s\n"
         .."Device:   %s\n"
-        .."Protocol: %s",
+        .."Protocol: %s\n"
+        .."Trigger:  %s",
         config.bridge_ip, config.bridge_port or 8765,
         meter or "C-7000",
-        connected and "Connected" or "Not connected",
-        dev_cfg   and "Configured" or "Not configured \xe2\x80\x93 run Setup",
-        proto_cap and "Captured"   or "Not captured \xe2\x80\x93 run Setup")
+        connected    and "Connected"             or "Not connected",
+        dev_cfg      and "Configured"            or "Not configured \xe2\x80\x93 run Setup",
+        proto_cap    and "Captured"              or "Not captured \xe2\x80\x93 run Setup",
+        trigger_disc and "Remote (hands-free)"   or "Physical button required")
 
     if needs_setup then
         local r = MessageBox({
@@ -1278,10 +1324,25 @@ show_bridge_status = function(display, config)
             buttons = {"Run Setup", "Close"},
         })
         if r == 1 then run_bridge_setup(display, config) end
+    elseif not trigger_disc then
+        -- Device and protocol are ready but remote trigger not yet discovered
+        local r = MessageBox({
+            title   = "Bridge Status \xe2\x80\x93 Ready (button mode)",
+            message = msg
+                    .. "\n\nBridge is ready. Measurements require pressing MEASURE\n"
+                    .. "on the C-7000.\n\n"
+                    .. "Discover the remote trigger for fully hands-free operation?",
+            display_handle = display,
+            buttons = {"Discover Remote Trigger", "Close"},
+        })
+        if r == 1 then
+            -- Run trigger discovery inline (Step 3 only)
+            _run_trigger_discovery(display, config)
+        end
     else
         MessageBox({
-            title   = "Bridge Status \xe2\x80\x93 Ready",
-            message = msg .. "\n\nBridge is fully configured and ready.",
+            title   = "Bridge Status \xe2\x80\x93 Fully Ready",
+            message = msg .. "\n\nBridge is fully hands-free and ready.",
             display_handle = display,
             buttons = {"OK"},
         })
@@ -1388,13 +1449,13 @@ run_bridge_setup = function(display, config)
 
     if cap_proto and cap_cct then
         MessageBox({
-            title   = "Setup Complete!",
+            title   = "Capture Complete",
             message = string.format(
-                "Bridge is fully configured!\n\n"
+                "Response format captured!\n\n"
                 .."Test measurement: CCT = %dK\n"
                 .."Raw data: %s\xe2\x80\xa6\n\n"
-                .."Remote Measurement is now available\n"
-                .."during calibration.",
+                .."Bridge can now receive measurements\n"
+                .."when MEASURE is pressed on the C-7000.",
                 cap_cct, cap_raw:sub(1, 20)),
             display_handle = display,
             buttons = {"OK"},
@@ -1409,6 +1470,34 @@ run_bridge_setup = function(display, config)
                 .."See README: update _parse() in\n"
                 .."meter_c7000_hid.py on the Pi.",
                 cap_raw:sub(1, 48)),
+            display_handle = display,
+            buttons = {"OK"},
+        })
+        return   -- cannot proceed to trigger discovery without a working response format
+    end
+
+    -- Step 3: Discover remote trigger (optional — enables fully hands-free measurement)
+    local step3 = MessageBox({
+        title   = "Bridge Setup \xe2\x80\x93 Step 3: Remote Trigger",
+        message = "Optional: discover the remote trigger command.\n\n"
+                .."When found, the bridge can start measurements\n"
+                .."automatically \xe2\x80\x93 no button press required.\n\n"
+                .."The bridge will probe candidate USB commands\n"
+                .."(takes up to 2 minutes).\n\n"
+                .."Click 'Discover' to start, or 'Skip' to use\n"
+                .."physical button press mode instead.",
+        display_handle = display,
+        buttons = {"Discover Remote Trigger", "Skip"},
+    })
+    if step3 == 1 then
+        _run_trigger_discovery(display, config)
+    else
+        MessageBox({
+            title   = "Setup Complete",
+            message = "Bridge is configured and ready.\n\n"
+                    .."Measurements require pressing MEASURE on the C-7000.\n\n"
+                    .."You can run 'Discover Remote Trigger' from\n"
+                    .."Bridge Status at any time to enable hands-free mode.",
             display_handle = display,
             buttons = {"OK"},
         })
