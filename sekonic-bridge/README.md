@@ -12,7 +12,7 @@ Lighttune add-on that connects a **Sekonic C-7000 Spectromaster** to the show ne
       ▼
 [Raspberry Pi Zero 2W]  ──── WiFi / Ethernet ────►  [GrandMA3 Console @ FOH]
   Python HTTP server                                    SekonicCalibrator plugin
-  port 8765                                             calls /measure via curl
+  port 8765                                             calls /measure via socket.http
                                                                │
                                                      [iPhone / Tablet]
                                                      Operator uses GrandMA3
@@ -160,7 +160,7 @@ Example `config.json`:
 
 ## Testing the Connection
 
-From the GrandMA3 console (or any computer on the network):
+Run these from the **Pi terminal** (or any computer on the same network via SSH or shell) — not from the GrandMA3 console:
 
 ```bash
 # Check bridge status
@@ -231,7 +231,7 @@ The bridge can discover and configure itself from the GrandMA3 plugin:
 4. Then calls `POST /capture` — **press the MEASURE button on the C-7000**
 5. The bridge captures the raw response, auto-parses it, and saves `device_config.json`
 
-Or run the same steps manually with curl:
+Or run the same steps manually from the Pi terminal:
 
 ```bash
 # Step 1 — discover VID/PID
@@ -359,6 +359,6 @@ The mock server returns realistic randomised values and responds as if a real me
 
 - The bridge server runs as a `systemd` service under a dedicated unprivileged `sekonic` user
 - USB access is granted via a udev rule — no `sudo` required at runtime
-- The `/measure` endpoint blocks until the meter responds (up to 35 s) — this is intentional; it keeps the Lua plugin simple (one `curl` call)
+- The `/measure` endpoint blocks until the meter responds (up to 35 s) — this is intentional; it keeps the Lua plugin simple (one `socket.http` call)
 - Concurrent measurement requests are rejected with HTTP 409 to prevent race conditions
 - All measurements are logged to `bridge.log` in the install directory
