@@ -43,8 +43,6 @@ local GEL_STEPS = {
     { threshold = 0.003, amount = "1/8"  },
 }
 
-local GITHUB_REPO = "jrikner/Lighttune-0.1"
-
 -- Unicode star used in history display to mark best values (★)
 local STAR = "\xe2\x98\x85"
 
@@ -958,7 +956,8 @@ end
 
 -- Browse fixture_log.json from the console. ★ marks best values per fixture/kelvin.
 local function show_fixture_history(display, data_dir)
-    local sep  = data_dir:sub(-1)=="\\" and "\\" or "/"
+    local sep = "/"
+    pcall(function() sep = GetPathSeparator() end)
     local path = data_dir..sep.."fixture_log.json"
 
     local records = {}
@@ -1048,75 +1047,104 @@ local function show_fixture_history(display, data_dir)
 end
 
 --------------------------------------------------------------------------------
--- SECTION 3b: GDTF CAPABILITY DETECTION
+-- SECTION 3b: FIXTURE CAPABILITY DETECTION (via MA3 Patch API)
+--
+-- io.popen() and os.execute() are NOT available in GrandMA3 Lua, so GDTF files
+-- cannot be extracted with unzip. Instead, capabilities are read from the MA3
+-- Patch API: DataPool → Groups → Members[0] → FixtureType → DMXModes.
+-- GrandMA3 has already parsed all GDTF data — we just query it through the API.
+--
+-- Note: has_color_wheel_filters (specific slot names like "1/4 CTO") cannot be
+-- detected without reading GDTF XML. When a ColorWheel attribute is found we
+-- set both has_color_wheel and has_color_wheel_filters = true as a safe default,
+-- since a fixture with a colour wheel very likely has correction filter slots.
 --------------------------------------------------------------------------------
 
-local IS_WINDOWS = package.config:sub(1,1)=="\\"
-local NULL_DEV   = IS_WINDOWS and "NUL" or "/dev/null"
-local TMP_DIR    = IS_WINDOWS and (os.getenv("TEMP") or "C:\\Temp") or "/tmp"
-
-local function get_gdtf_dir()
-    local sep = IS_WINDOWS and "\\" or "/"
-    if IS_WINDOWS then
-        return (os.getenv("PROGRAMDATA") or "C:\\ProgramData")
-            ..sep.."MALightingTechnology"..sep.."gma3_library"..sep.."gdtf"
-    else
-        return (os.getenv("HOME") or "/root")
-            ..sep.."MALightingTechnology"..sep.."gma3_library"..sep.."gdtf"
-    end
-end
-
-local function find_gdtf_file(make, model)
-    if not make or not model or make=="" or model=="" then return nil end
-    local dir    = get_gdtf_dir()
-    local prefix = (make.."@"..model):gsub("[%.%+%^%$%(%)%[%]%%]","%%%1")
-    local found  = nil
-    pcall(function()
-        local cmd
-        if IS_WINDOWS then
-            cmd=string.format('dir /b "%s" 2>NUL | findstr /i /b "%s@"', dir, make.."@"..model)
-        else
-            cmd=string.format('ls "%s" 2>/dev/null | grep -i "^%s@" | head -1', dir, prefix)
-        end
-        local h=io.popen(cmd); if not h then return end
-        local line=h:read("*l"); h:close()
-        if line and line~="" then
-            found=dir..(IS_WINDOWS and "\\" or "/")..line:match("^%s*(.-)%s*$")
-        end
-    end)
-    return found
-end
-
-local function read_gdtf_capabilities(make, model)
-    local gdtf_path = find_gdtf_file(make, model)
-    if not gdtf_path then return nil end
-    local xml=nil
-    pcall(function()
-        local h=io.popen(string.format('unzip -p "%s" description.xml 2>%s', gdtf_path, NULL_DEV))
-        if h then xml=h:read("*a"); h:close() end
-    end)
-    if not xml or xml=="" then return nil end
-
-    -- Detect color wheel slots that look like physical gel filters
-    local has_filter_slots =
-        xml:find('<Slot[^>]*Name="[^"]*[Cc][Tt][OoBb]') ~= nil or
-        xml:find('<Slot[^>]*Name="[^"]*[Gg]reen')        ~= nil or
-        xml:find('<Slot[^>]*Name="[^"]*[Cc]orrection')   ~= nil or
-        xml:find('<Slot[^>]*Name="[^"]*[Ll]ee')          ~= nil or
-        xml:find('<Slot[^>]*Name="[^"]*[Rr]osco')        ~= nil
-
-    return {
-        has_tint               = xml:find('Name="Tint"')        ~= nil,
-        has_cto                = xml:find('Name="CTO"')         ~= nil,
-        has_ctb                = xml:find('Name="CTB"')         ~= nil,
-        has_rgb                = xml:find('Name="ColorAdd_R"')  ~= nil,
-        has_color_wheel        = xml:find('<Wheel[^>]*Name="[Cc]olor"') ~= nil,
-        has_color_wheel_filters= has_filter_slots,
-        -- Manufacturer-rated values declared in GDTF
-        gdtf_cri = tonumber(xml:match('CRI="(%d+)"')),
-        gdtf_cct = tonumber(xml:match('NominalColorTemperature="(%d+)"')
-                         or xml:match('ColorTemperature[^>]*Value="(%d+)"')),
+-- Read fixture colour capabilities from the MA3 Patch API.
+-- group_name: the group number or name string used to locate the fixture.
+-- Returns a capabilities table, or nil when the Patch API is inaccessible or
+-- the fixture type carries no colour attribute information.
+local function read_capabilities_from_patch(group_name)
+    if not group_name then return nil end
+    local caps = {
+        has_tint               = false,
+        has_ctb                = false,
+        has_cto                = false,
+        has_rgb                = false,
+        has_color_wheel        = false,
+        has_color_wheel_filters = false,
+        gdtf_cri               = nil,
+        gdtf_cct               = nil,
     }
+    local found_any = false
+
+    pcall(function()
+        -- Locate the group in the DataPool ─────────────────────────────────
+        local dp = DataPool(); if not dp then return end
+        local groups = dp.Groups; if not groups then return end
+        local grp = nil
+        local num = tonumber(group_name)
+        if num then grp = groups:Child(num-1) end
+        if not grp then
+            for i = 0, groups:Count()-1 do
+                local g = groups:Child(i)
+                if g and g.Name == group_name then grp = g; break end
+            end
+        end
+        if not grp then return end
+
+        local members = grp.Members
+        if not members or members:Count() == 0 then return end
+        local fixture = members:Child(0); if not fixture then return end
+        local ft = fixture.FixtureType;   if not ft      then return end
+
+        -- Manufacturer-rated CRI / CCT may be properties on FixtureType ────
+        pcall(function()
+            local cri = tonumber(ft.CRI or ft.Cri)
+            if cri then caps.gdtf_cri = cri; found_any = true end
+        end)
+        pcall(function()
+            local cct = tonumber(ft.NominalColorTemperature or ft.ColorTemperature)
+            if cct then caps.gdtf_cct = cct; found_any = true end
+        end)
+
+        -- Traverse DMXModes → Default → DMXChannels → LogicalChannels ──────
+        -- GrandMA3 already has all GDTF DMX attribute data in memory.
+        local modes = ft.DMXModes; if not modes then return end
+        local mode  = nil
+        pcall(function() mode = modes.Default end)  -- GDTF default mode name
+        if not mode then pcall(function() mode = modes:Child(0) end) end
+        if not mode then return end
+
+        local dch = mode.DMXChannels; if not dch then return end
+        local ch_count = 0
+        pcall(function() ch_count = dch:Count() end)
+
+        for i = 0, math.max(ch_count - 1, 99) do
+            local ch = dch:Child(i); if not ch then break end
+            pcall(function()
+                local lcs = ch.LogicalChannels; if not lcs then return end
+                local lc  = lcs:Child(0);        if not lc  then return end
+                -- GDTF Attribute name is on the LogicalChannel
+                local attr = tostring(lc.Attribute or lc.name or "")
+                if attr == "" then return end
+                found_any = true
+                if attr == "Tint"   then caps.has_tint = true end
+                if attr == "CTO"    then caps.has_cto  = true end
+                if attr == "CTB"    then caps.has_ctb  = true end
+                if attr:find("^ColorAdd_") or attr:find("^ColorSub_") then
+                    caps.has_rgb = true
+                end
+                if attr == "ColorWheel" or attr:find("[Cc]olor[Ww]heel") then
+                    caps.has_color_wheel        = true
+                    caps.has_color_wheel_filters = true  -- assume correction slots exist
+                end
+            end)
+        end
+    end)
+
+    if not found_any then return nil end
+    return caps
 end
 
 --------------------------------------------------------------------------------
@@ -1158,164 +1186,96 @@ end
 
 --------------------------------------------------------------------------------
 -- SECTION 5: DATA LOGGING
+--
+-- io.popen() and os.execute() are NOT available in GrandMA3 Lua.
+-- Path resolution uses GetPath(Enums.PathType.PluginLibrary) + GetPathSeparator().
+-- Community upload to GitHub requires HTTPS; only lua.ftp (plain FTP) is
+-- documented in the GrandMA3 Lua environment. Fixture data is therefore saved
+-- locally only. To share data with the community, export fixture_log.json
+-- manually and submit it via the project's GitHub page.
+--
+-- The data/ directory must exist inside the plugin folder (it is part of the
+-- plugin package). No runtime directory creation is performed.
 --------------------------------------------------------------------------------
 
-local function get_data_dir()
-    local sep=IS_WINDOWS and "\\" or "/"
-    if IS_WINDOWS then
-        return (os.getenv("APPDATA") or (os.getenv("USERPROFILE").."\\AppData\\Roaming"))
-            .."\\MALightingTechnology\\gma3_library\\datapools\\plugins\\SekonicCalibrator"
+-- Returns the OS path separator using the GrandMA3 GetPathSeparator() API.
+local function get_sep()
+    local sep = "/"
+    pcall(function() sep = GetPathSeparator() end)
+    return sep
+end
+
+-- Returns the path to the SekonicCalibrator plugin root directory.
+-- Uses GetPath(Enums.PathType.PluginLibrary) when available;
+-- falls back to a HostOS-based path if the API is unavailable.
+local function get_plugin_dir()
+    local sep = get_sep()
+    local base = nil
+    pcall(function() base = GetPath(Enums.PathType.PluginLibrary) end)
+    if base and base ~= "" then
+        return base .. sep .. "SekonicCalibrator"
+    end
+    -- Fallback: construct path from HostOS
+    local host = "Linux"
+    pcall(function() host = HostOS() end)
+    if host == "Windows" then
+        sep = "\\"
+        local appdata = (os.getenv and os.getenv("APPDATA"))
+                     or "C:\\Users\\Default\\AppData\\Roaming"
+        return appdata .. sep .. "MALightingTechnology" .. sep
+            .. "gma3_library" .. sep .. "datapools" .. sep
+            .. "plugins" .. sep .. "SekonicCalibrator"
     else
-        return (os.getenv("HOME") or "/root")
-            .."/MALightingTechnology/gma3_library/datapools/plugins/SekonicCalibrator"
+        local home = (os.getenv and os.getenv("HOME")) or "/root"
+        return home .. sep .. "MALightingTechnology" .. sep
+            .. "gma3_library" .. sep .. "datapools" .. sep
+            .. "plugins" .. sep .. "SekonicCalibrator"
     end
 end
 
-local function mkdir_p(path)
-    if IS_WINDOWS then os.execute('mkdir "'..path..'" 2>'..NULL_DEV)
-    else               os.execute('mkdir -p "'..path..'" 2>'..NULL_DEV) end
+-- Returns the path to the data directory (plugin_dir/data).
+local function get_data_dir()
+    local dir = get_plugin_dir()
+    if not dir then return nil end
+    return dir .. get_sep() .. "data"
 end
 
 -- Read config.json. Returns config table or nil.
--- Supported fields: github_token, github_username, community_upload (bool).
+-- Supported fields: github_username (used as contributor name in DB records).
 local function load_config()
-    local sep  = IS_WINDOWS and "\\" or "/"
-    local path = get_data_dir()..sep.."config.json"
-    local f    = io.open(path,"r"); if not f then return nil end
-    local content=f:read("*a"); f:close()
-    local token    = content:match('"github_token"%s*:%s*"([^"]+)"')
+    local dir = get_plugin_dir()
+    if not dir then return nil end
+    local path = dir .. get_sep() .. "config.json"
+    local f = io.open(path, "r"); if not f then return nil end
+    local content = f:read("*a"); f:close()
     local username = content:match('"github_username"%s*:%s*"([^"]+)"')
-    if not token or token=="" then return nil end
-    -- community_upload: default false (opt-in)
-    local upload = content:find('"community_upload"%s*:%s*true') ~= nil
-    return { github_token=token, github_username=username, community_upload=upload }
+    return { github_username = username }
 end
 
 -- Append db_entry to local fixture_log.json using the append-only schema.
+-- The data/ directory must exist (part of plugin installation).
 local function save_fixture_log_local(db_entry)
-    local ok=pcall(function()
-        local sep = IS_WINDOWS and "\\" or "/"
-        local dir = get_data_dir()..sep.."data"
-        mkdir_p(dir)
-        local path=dir..sep.."fixture_log.json"
-        local records={}
-        local rf=io.open(path,"r")
-        if rf then records=json_parse_db_array(rf:read("*a")); rf:close() end
+    local ok = pcall(function()
+        local sep  = get_sep()
+        local path = get_data_dir() .. sep .. "fixture_log.json"
+        local records = {}
+        local rf = io.open(path, "r")
+        if rf then records = json_parse_db_array(rf:read("*a")); rf:close() end
         append_fixture_record(records, db_entry)
         sort_fixture_records(records)
-        local wf=io.open(path,"w")
+        local wf = io.open(path, "w")
         if wf then wf:write(json_encode_db_array(records)); wf:close() end
     end)
     return ok
 end
 
-local function curl_exec(cmd)
-    local ok,result=pcall(function()
-        local h=io.popen(cmd); if not h then return nil end
-        local out=h:read("*a"); h:close(); return out
-    end)
-    return ok and result or nil
-end
-
--- Upload db_entry to per-user community file (data/community/{username}.json).
--- Uses GET→parse→append→recompute→sort→PUT.
-local function upload_community_file(db_entry, config)
-    if not config or not config.github_token or not config.github_username then return false end
-    -- Connectivity check
-    local code=curl_exec(string.format('curl -s --max-time 3 -o %s -w "%%{http_code}" https://api.github.com 2>%s',
-        NULL_DEV, NULL_DEV))
-    if not code or not code:match("^2%d%d") then return false end
-
-    local username=config.github_username
-    local filepath="data/community/"..username..".json"
-    local url=string.format("https://api.github.com/repos/%s/contents/%s", GITHUB_REPO, filepath)
-    local auth='-H "Authorization: token '..config.github_token..'"'
-
-    -- GET existing file
-    local get_resp=curl_exec(string.format('curl -s %s "%s" 2>%s', auth, url, NULL_DEV))
-    local sha=get_resp and get_resp:match('"sha"%s*:%s*"([^"]+)"') or nil
-    local records={}
-    if get_resp then
-        local b64=get_resp:match('"content"%s*:%s*"([A-Za-z0-9%+%/%=\n\\]+)"')
-        if b64 then
-            b64=b64:gsub("\\n",""):gsub("%s","")
-            local ok,dec=pcall(base64_decode,b64)
-            if ok and dec and dec~="" then records=json_parse_db_array(dec) end
-        end
-    end
-
-    -- Append, recompute, sort
-    append_fixture_record(records, db_entry)
-    sort_fixture_records(records)
-
-    local new_json=json_encode_db_array(records)
-    local b64_content=base64_encode(new_json)
-
-    local commit_msg=string.format("Update fixture data: %s %s @ %dK",
-        (db_entry.make  or ""):gsub('"','\\"'),
-        (db_entry.model or ""):gsub('"','\\"'),
-        db_entry.kelvin or 0)
-
-    local tmp=TMP_DIR..(IS_WINDOWS and "\\" or "/").."sc_community.json"
-    local tf=io.open(tmp,"w"); if not tf then return false end
-    if sha then
-        tf:write(string.format('{"message":"%s","content":"%s","sha":"%s"}',
-            commit_msg, b64_content, sha))
-    else
-        tf:write(string.format('{"message":"%s","content":"%s"}',
-            commit_msg, b64_content))
-    end
-    tf:close()
-
-    local resp=curl_exec(string.format(
-        'curl -s -X PUT %s -H "Content-Type: application/json" '
-        ..'-d @"%s" -o %s -w "%%{http_code}" "%s" 2>%s',
-        auth, tmp, NULL_DEV, url, NULL_DEV))
-    return resp and (resp=="200" or resp=="201")
-end
-
--- Orchestrate local save and optional community upload.
+-- Save fixture measurement locally.
+-- Community upload to GitHub is not available in GrandMA3 Lua (requires HTTPS;
+-- only lua.ftp / plain FTP is documented). Export fixture_log.json manually
+-- to share data with the community.
 local function log_fixture_data(display, db_entry, config)
     if not db_entry.make or not db_entry.model then return end
-
     save_fixture_log_local(db_entry)
-
-    if config and config.community_upload then
-        pcall(upload_community_file, db_entry, config)
-    elseif config and config.github_token and not config.community_upload then
-        -- Token present but upload not opted-in: show one-time hint
-        local sep=IS_WINDOWS and "\\" or "/"
-        local flag_dir=get_data_dir()..sep.."data"
-        mkdir_p(flag_dir)
-        local flag_path=flag_dir..sep..".upload_hint_shown"
-        local flag=io.open(flag_path,"r")
-        if not flag then
-            local wf=io.open(flag_path,"w"); if wf then wf:write("1"); wf:close() end
-            MessageBox({ title="Community Upload Available",
-                message="GitHub token found.\n\nTo share fixture data with the community,\n"
-                      ..'add to config.json:\n\n  "community_upload": true\n\n'
-                      .."See README for details.",
-                display_handle=display, buttons={"OK"} })
-        else flag:close() end
-    elseif not config then
-        -- No config at all: one-time setup hint
-        local sep=IS_WINDOWS and "\\" or "/"
-        local flag_dir=get_data_dir()..sep.."data"
-        mkdir_p(flag_dir)
-        local flag_path=flag_dir..sep..".config_hint_shown"
-        local flag=io.open(flag_path,"r")
-        if not flag then
-            local wf=io.open(flag_path,"w"); if wf then wf:write("1"); wf:close() end
-            MessageBox({ title="Community Upload",
-                message="Measurements saved locally.\n\n"
-                      .."To share with the community database, create\n"
-                      .."SekonicCalibrator/data/config.json:\n\n"
-                      ..'{\n  "github_token":    "ghp_...",\n'
-                      ..'  "github_username": "your_username",\n'
-                      ..'  "community_upload": true\n}\n\nSee README for details.',
-                display_handle=display, buttons={"OK"} })
-        else flag:close() end
-    end
 end
 
 --------------------------------------------------------------------------------
@@ -1337,8 +1297,9 @@ local function main(display, ...)
         })
         if menu==nil or menu==3 then return end
 
-        local data_dir = get_data_dir()..(IS_WINDOWS and "\\" or "/").."data"
-        mkdir_p(data_dir)
+        -- data_dir is provided by get_data_dir(); no mkdir needed –
+        -- the data/ directory must exist as part of plugin installation.
+        local data_dir = get_data_dir()
 
         if menu==2 then
             show_fixture_history(display, data_dir)
@@ -1355,7 +1316,8 @@ local function main(display, ...)
         -- Load local fixture records for pre-fill and session updates
         local fixture_records = {}
         do
-            local f=io.open(data_dir..(IS_WINDOWS and "\\" or "/").."fixture_log.json","r")
+            local sep = get_sep()
+            local f = io.open(data_dir..sep.."fixture_log.json","r")
             if f then fixture_records=json_parse_db_array(f:read("*a")); f:close() end
         end
 
@@ -1366,10 +1328,13 @@ local function main(display, ...)
 
             local fixture_make, fixture_model = get_fixture_model_input(display, group)
 
-            -- Read GDTF capabilities (nil = no data available)
-            local caps = read_gdtf_capabilities(fixture_make, fixture_model)
+            -- Read fixture capabilities from MA3 Patch API (nil = no data available).
+            -- io.popen() / unzip are not available in GrandMA3 Lua, so GDTF files
+            -- cannot be read directly. Capabilities are queried from the MA3 patch
+            -- object which already has all GDTF attribute data parsed in memory.
+            local caps = read_capabilities_from_patch(group)
 
-            -- Inject GDTF-rated CRI into goals for context in measurement prompts
+            -- Inject manufacturer-rated CRI into goals for context in measurement prompts
             goals.gdtf_cri = caps and caps.gdtf_cri or nil
 
             -- Look up historical data for pre-fill / pre-apply

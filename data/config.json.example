@@ -1,5 +1,3 @@
 {
-  "github_token":      "ghp_your_personal_access_token_here",
-  "github_username":   "your_github_username",
-  "community_upload":  false
+  "github_username": "your_github_username"
 }

@@ -184,29 +184,27 @@ Broadcast-camera-specific rating (EBU standard). More relevant than CRI for
 
 ---
 
-## GDTF Capability Detection
+## Fixture Capability Detection
 
-When a fixture make/model is identified (from the MA3 patch or entered manually),
-the plugin looks for a matching GDTF file in the GrandMA3 library:
+The plugin reads fixture colour capabilities directly from the **MA3 Patch API**
+(`DataPool → Groups → FixtureType → DMXModes → DMXChannels → LogicalChannels`).
+GrandMA3 already has all GDTF attribute data parsed in memory, so no GDTF file
+access is needed (and `io.popen` / shell commands are not available in GrandMA3
+Lua anyway).
 
-```
-~/MALightingTechnology/gma3_library/gdtf/
-```
-
-If found, the GDTF is read to detect which colour attributes the fixture
-supports. Correction hints in the assessment screen are then tailored to what
-the fixture can actually do:
+Correction hints in the assessment screen are tailored to what the fixture can
+actually do:
 
 | Capability detected | Hint shown |
 |---|---|
 | `Tint` DMX attribute | Suggest adjusting Tint channel to correct Duv |
 | `CTB` attribute | Suggest using CTB to reduce CCT |
 | `CTO` attribute | Suggest using CTO to raise CCT |
-| Color wheel with correction filter slots | Suggest checking color wheel slots |
-| Manufacturer CCT / CRI in GDTF | Shown as reference when entering measurements |
+| `ColorWheel` attribute | Suggest checking color wheel for correction filter slots |
+| Manufacturer CCT / CRI on FixtureType | Shown as reference when entering measurements |
 
 Gel hints (physical external filters) are always shown when no Tint channel is
-available, and as a fallback option when color-wheel filter slots are present.
+available, and as a fallback option when a colour wheel is present.
 
 ---
 
@@ -280,28 +278,32 @@ previously recorded measurements without starting a calibration session.
 
 ## Community Fixture Database
 
-### Enabling GitHub Upload
+### Local data file
 
-Community upload is **opt-in** and disabled by default.
+All measurements are saved to `data/fixture_log.json` inside the plugin folder.
+This file is plain JSON and can be shared manually.
 
-1. Create a **GitHub personal access token** with `contents: write` permission:
-   `https://github.com/settings/tokens`
+### Sharing with the community
 
-2. Copy `data/config.json.example` to `data/config.json` in the plugin folder
-   and fill in your details:
-   ```json
-   {
-     "github_token":     "ghp_your_token_here",
-     "github_username":  "your_github_username",
-     "community_upload": true
-   }
-   ```
+GrandMA3's Lua environment does not support HTTPS connections (only `lua.ftp`
+plain-FTP is available), so automatic upload to the GitHub REST API is not
+possible from within the plugin. To contribute your fixture data:
 
-3. The plugin will upload each fixture record to your personal file under
-   `data/community/{username}.json` in this repository.
+1. Locate `fixture_log.json` in `SekonicCalibrator/data/` on the console.
+2. Open a pull request or issue on the project GitHub page and attach the file.
 
-Community files are sorted: GitHub usernames A→Z, then within each user's file:
-make A→Z → model A→Z → kelvin low→high.
+### Contributor name in records
+
+To have your name recorded as the contributor in the local database, create
+`config.json` in the plugin folder (not inside `data/`):
+
+```json
+{
+  "github_username": "your_github_username"
+}
+```
+
+If no config file is present, records are saved with `contributor: "local"`.
 
 `config.json` is listed in `.gitignore` and will never be committed.
 
