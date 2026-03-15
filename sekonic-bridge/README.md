@@ -221,66 +221,82 @@ The calibration session pauses for ~2–5 seconds while the bridge triggers the 
 
 ---
 
-## USB Protocol Note
+## USB Protocol
 
-The C-7000 USB HID protocol is not publicly documented. The bridge includes a **3-step self-configuration wizard** — no Wireshark required.
+The C-7000 USB protocol is fully documented and hardcoded in the bridge —
+no Wireshark capture required.
 
-### Auto-discovery wizard (recommended — no Wireshark)
+**Protocol confirmed from [skreader](https://github.com/kinglevel/skreader) (MIT),
+based on the official Sekonic C# SDK.**
 
-Run the wizard from the GrandMA3 plugin: **Bridge Status → Run Setup**. Three steps:
+| Constant | Value |
+|----------|-------|
+| Vendor ID | `0x0A41` |
+| Product ID | `0x7003` |
+| OUT endpoint | `0x02` (bulk) |
+| IN endpoint | `0x81` (bulk) |
+| Response size | 2380 bytes |
+| ACK pattern | `0x06 0x30` |
+
+**Command sequence for a remote measurement:**
+
+```
+RT1  → ACK           — enable remote mode
+RM0  → ACK           — trigger measurement
+ST   → 5-byte status — poll every 50 ms until idle
+NR   → ACK + 2380 B  — retrieve result
+RT0  → ACK           — disable remote mode
+```
+
+**Response byte offsets** (all big-endian float32, 5 bytes each including range flag):
+
+| Field | Offset |
+|-------|--------|
+| CCT (K) | 50 |
+| Duv | 55 |
+| CRI Ra | 348 |
+| R9 | 393 |
+| TLCI | not in standard response — requires FW > 25 extended mode |
+
+### Setup wizard
+
+Run from the GrandMA3 plugin: **Bridge Status → Run Setup**. For the C-7000, all three steps complete automatically — no button press needed:
 
 | Step | What happens | Your action |
 |------|-------------|-------------|
-| **1 – Discover** | Bridge scans USB, finds Sekonic VID/PID | Make sure C-7000 is plugged into the Pi |
-| **2 – Capture** | Bridge listens for one measurement response | **Press MEASURE** on the C-7000 |
-| **3 – Remote Trigger** | Bridge probes HID commands to find the trigger byte | Click "Discover" and wait ~1–2 min |
-
-After step 3 succeeds, the bridge is **fully hands-free** — `POST /measure` triggers the meter automatically. All results are saved in `device_config.json`.
+| **1 – Discover** | Bridge confirms C-7000 on USB; auto-marks protocol as known | Ensure C-7000 is plugged into the Pi |
+| **2 – Verify** | Bridge takes a live test measurement to confirm the connection | None (triggers automatically) |
+| **3 – Remote Trigger** | Already known — returns immediately | None |
 
 Or run each step manually from the Pi terminal:
 
 ```bash
-# Step 1 — discover VID/PID
+# Step 1 — confirm device and auto-flag protocol
 curl http://localhost:8765/discover
 
-# Step 2 — press MEASURE on the meter first, then:
+# Step 2 — take a live test measurement (no button press for C-7000)
 curl -X POST http://localhost:8765/capture
 
-# Step 3 — auto-probe the remote trigger (takes up to 2 min)
+# Step 3 — already known for C-7000; returns immediately
 curl -X POST http://localhost:8765/learn_trigger
 ```
 
-Or use the standalone discovery script on the Pi to get VID/PID:
+### Fallback — Wireshark capture (future/unknown meters only)
 
-```bash
-python3 discover_device.py
-```
-
-> **Step 3 explained:** Because the Pi is the USB host, it has full control over
-> what it sends to the C-7000. `POST /learn_trigger` tries a prioritised list of
-> short HID byte sequences and checks whether the meter responds with valid
-> measurement data. The first sequence that elicits a plausible response is
-> saved as the trigger command. No Wireshark or second computer needed.
-
-### Fallback — Manual Wireshark capture (advanced)
-
-If `POST /learn_trigger` cannot find the trigger (e.g. the meter uses an
-unusual padding requirement), you can capture it manually:
+For meters other than the C-7000, if `POST /learn_trigger` cannot discover
+the trigger automatically, you can capture it with Wireshark:
 
 | Platform | Tool | Notes |
 |----------|------|-------|
-| **Windows (recommended)** | Wireshark + USBPcap | Easiest; no OS changes needed; USBPcap is bundled with Wireshark |
-| **Linux / Raspberry Pi** | Wireshark + usbmon | `sudo modprobe usbmon`, then capture the `usbmon` interface in Wireshark |
+| **Windows (recommended)** | Wireshark + USBPcap | Easiest; bundled with Wireshark installer |
+| **Linux / Raspberry Pi** | Wireshark + usbmon | `sudo modprobe usbmon`, capture `usbmon` interface |
 | **macOS** | Not recommended | Requires disabling System Integrity Protection (SIP) |
 
-**Windows capture steps:**
-1. Install [Wireshark](https://www.wireshark.org/) (includes USBPcap)
-2. Connect the C-7000 via USB to the Windows PC
-3. Open Wireshark → select the USBPcap interface showing the C-7000
-4. Open the Sekonic C-700/7000 Utility Software and click **"Measure"**
-5. Filter: `usb.transfer_type == 3` (interrupt = HID packets)
-6. Find the **OUT packet** — bytes sent host → device to trigger a measurement
-7. Update `meter_c7000_hid.py`: set `TRIGGER_CMD` to those bytes and restart the bridge
+Use Wireshark to find the OUT bulk packet the PC sends when clicking "Measure"
+in the Sekonic Utility Software, then add the captured bytes to `device_config.json`
+as `trigger_cmd_hex`.
+
+> **C-7000 users:** Wireshark is not needed — the full protocol is built in.
 
 ---
 

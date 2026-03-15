@@ -1,25 +1,18 @@
 """
-Sekonic C-7000 USB HID interface using pyusb.
+Sekonic C-7000 USB bulk interface.
 
-This module communicates with the C-7000 directly over USB without
-requiring the official Windows-only SDK. It uses the raw USB HID protocol
-which works on Raspberry Pi (Linux), macOS, and Windows.
+Protocol confirmed from https://github.com/kinglevel/skreader (MIT licence),
+based on the official Sekonic C# SDK. No Wireshark capture required.
 
-SETUP — use the built-in wizard (no Wireshark required):
-  1. GET  /discover       – finds VID/PID automatically, saves device_config.json
-  2. POST /capture        – user presses MEASURE once; bridge captures the response format
-  3. POST /learn_trigger  – bridge probes candidate HID commands to find the remote trigger
+Command sequence for a remote measurement:
+  b"RT1"  → 2-byte ACK           — enable remote mode
+  b"RM0"  → 2-byte ACK           — trigger measurement
+  b"ST"   → 5-byte status reply  — poll every 50 ms until idle
+  b"NR"   → 2-byte ACK + 2380 B  — retrieve result
+  b"RT0"  → 2-byte ACK           — disable remote mode
 
-After step 3 succeeds, POST /measure triggers measurements with no physical button press.
-All discovered values are persisted in device_config.json; restarting the server reloads them.
-
-FALLBACK (advanced) — if /learn_trigger fails:
-  Use Wireshark + USBPcap on Windows to capture the trigger command manually:
-  1. Install Wireshark + USBPcap (https://desowin.org/usbpcap/)
-  2. Connect C-7000, run the Sekonic Utility Software, capture the USBPcap interface
-  3. Filter: usb.transfer_type == 0x03 (interrupt transfers = HID data)
-  4. Identify the OUT packet that triggers a measurement; copy the bytes
-  5. Set TRIGGER_CMD below to those bytes and restart the server
+Supported meters: C-700, C-800, C-7000 (VID 0x0A41, all share PID 0x7003
+for this generation; verify with GET /discover if yours differs).
 """
 
 import json
@@ -31,10 +24,7 @@ import usb.core
 import usb.util
 
 
-# ── Device configuration (overridden by device_config.json if present) ────────
-#
-# device_config.json is written by GET /discover and POST /capture on the server.
-# If it exists, its values take priority over the TODO constants below.
+# ── Device configuration ──────────────────────────────────────────────────────
 
 _DEVICE_CONFIG_PATH = Path(__file__).parent / "device_config.json"
 
@@ -50,56 +40,55 @@ def _load_cfg() -> dict:
 
 _cfg = _load_cfg()
 
-VENDOR_ID  = _cfg.get("vendor_id",  0x0000)   # TODO: set after running /discover
-PRODUCT_ID = _cfg.get("product_id", 0x0000)   # TODO: set after running /discover
+# VID/PID confirmed from skreader; override via device_config.json if needed.
+VENDOR_ID   = _cfg.get("vendor_id",  0x0A41)
+PRODUCT_ID  = _cfg.get("product_id", 0x7003)
 
 INTERFACE    = 0
-ENDPOINT_OUT = 0x01   # TODO: verify from Wireshark capture
-ENDPOINT_IN  = 0x81   # TODO: verify from Wireshark capture
+ENDPOINT_OUT = 0x02   # bulk OUT — confirmed from skreader
+ENDPOINT_IN  = 0x81   # bulk IN  — confirmed from skreader
 
-# Trigger command — loaded from device_config.json if POST /learn_trigger succeeded,
-# otherwise defaults to the single-byte placeholder (physical button press required).
-_trigger_hex = _cfg.get("trigger_cmd_hex", "")
-TRIGGER_CMD     = bytes.fromhex(_trigger_hex) if _trigger_hex else bytes([0x00])
-RESPONSE_LENGTH = _cfg.get("response_length", 64)
+# Protocol constants confirmed from skreader const.go / device.go
+RESPONSE_SIZE   = 2380                  # MeasurementDataValidSize
+ACK             = bytes([0x06, 0x30])   # SkResponseOK
+POLL_INTERVAL_S = 0.05                  # WaitPollFreqDefault (50 ms)
+MEASURE_TIMEOUT = 20.0                  # WaitMeasTimeoutDefault (20 s)
 
-MEASUREMENT_TIMEOUT_MS = 30_000
-
-# Parse parameters discovered during POST /capture (empty = use _parse() defaults)
-_PARSE_FMT    = _cfg.get("parse_fmt",    "<HhBBB")
-_PARSE_OFFSET = _cfg.get("parse_offset", 0)
+# ── Response byte offsets (confirmed from skreader measurement.go) ─────────────
+# All values are big-endian float32.
+# Each field entry is 5 bytes: 4-byte float32 + 1-byte range indicator (Ok/Under/Over).
+_OFF_CCT = 50    # Correlated Colour Temperature (K)
+_OFF_DUV = 55    # Delta uv
+_OFF_CRI = 348   # CRI Ra
+_OFF_R9  = 393   # R9 = R1-array[8], offset = 353 + 8 × 5
+# TLCI is not present in the standard NR response; requires FW>25 extended mode.
 
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 class C7000HID:
-    """USB HID driver for the Sekonic C-7000 Spectromaster."""
+    """USB bulk driver for the Sekonic C-7000 (and compatible C-700/C-800)."""
 
     def __init__(self):
         self._dev = None
-        self._trigger_cmd = TRIGGER_CMD
 
     def connect(self) -> bool:
         """Find and open the C-7000 USB device. Returns True on success."""
-        # Reload config on each connect attempt so changes written by /discover,
-        # /capture, or /learn_trigger take effect without restarting the server.
         cfg = _load_cfg()
         vid = cfg.get("vendor_id", VENDOR_ID)
         pid = cfg.get("product_id", PRODUCT_ID)
-        # Update the effective trigger command from config if available
-        trigger_hex = cfg.get("trigger_cmd_hex", "")
-        self._trigger_cmd = bytes.fromhex(trigger_hex) if trigger_hex else TRIGGER_CMD
-        if vid == 0 or pid == 0:
-            raise RuntimeError(
-                "VID/PID not configured. Run GET /discover to auto-detect, "
-                "or set VENDOR_ID/PRODUCT_ID in meter_c7000_hid.py."
-            )
+
         dev = usb.core.find(idVendor=vid, idProduct=pid)
         if dev is None:
             return False
-        # Detach kernel HID driver on Linux so we can claim the interface
-        if dev.is_kernel_driver_active(INTERFACE):
-            dev.detach_kernel_driver(INTERFACE)
+
+        # Detach kernel driver on Linux so we can claim the interface.
+        try:
+            if dev.is_kernel_driver_active(INTERFACE):
+                dev.detach_kernel_driver(INTERFACE)
+        except Exception:
+            pass  # not applicable on Windows/macOS
+
         dev.set_configuration()
         usb.util.claim_interface(dev, INTERFACE)
         self._dev = dev
@@ -117,93 +106,94 @@ class C7000HID:
                 pass
             self._dev = None
 
+    # ── Protocol helpers ──────────────────────────────────────────────────────
+
+    def _send_cmd(self, cmd: bytes) -> None:
+        """Write cmd and verify the 2-byte ACK response."""
+        self._dev.write(ENDPOINT_OUT, cmd, timeout=2000)
+        ack = bytes(self._dev.read(ENDPOINT_IN, 2, timeout=2000))
+        if ack != ACK:
+            raise RuntimeError(f"Expected ACK {ACK.hex()}, got {ack.hex()!r}")
+
+    def _poll_ready(self) -> None:
+        """
+        Poll ST every 50 ms until the device reports idle.
+
+        ST response format (5 bytes total):
+          b"ST" prefix (2 bytes) + st1 + st2 + key
+        The device is busy while st2 & 0x0F (measuring / init / dark-cal /
+        flash-standby bits) or st1 & 0x0E (additional busy flags) are set.
+        Bit masks verified from skreader device.go.
+        """
+        deadline = time.time() + MEASURE_TIMEOUT
+        while time.time() < deadline:
+            try:
+                self._dev.write(ENDPOINT_OUT, b"ST", timeout=2000)
+                resp = bytes(self._dev.read(ENDPOINT_IN, 5, timeout=2000))
+                if len(resp) >= 5 and resp[:2] == b"ST":
+                    st1, st2 = resp[2], resp[3]
+                    if not (st2 & 0x0F) and not (st1 & 0x0E):
+                        return  # idle
+            except usb.core.USBTimeoutError:
+                pass
+            time.sleep(POLL_INTERVAL_S)
+        raise TimeoutError("Meter did not complete measurement within timeout")
+
+    def _get_result(self) -> bytes:
+        """Send NR, read the ACK, then read the 2380-byte measurement payload."""
+        self._dev.write(ENDPOINT_OUT, b"NR", timeout=2000)
+        ack = bytes(self._dev.read(ENDPOINT_IN, 2, timeout=2000))
+        if ack != ACK:
+            raise RuntimeError(f"NR: expected ACK {ACK.hex()}, got {ack.hex()!r}")
+        return bytes(self._dev.read(ENDPOINT_IN, RESPONSE_SIZE, timeout=5000))
+
+    # ── Public API ────────────────────────────────────────────────────────────
+
     def measure(self) -> dict:
-        """
-        Trigger a measurement and return parsed values.
-        Blocks until the meter responds or timeout elapses.
-        """
+        """Trigger a remote measurement and return parsed values."""
         if self._dev is None:
             raise RuntimeError("meter_not_connected")
-
-        # Send trigger command (loaded from device_config.json if /learn_trigger succeeded)
-        self._dev.write(ENDPOINT_OUT, self._trigger_cmd)
-
-        # Wait for response
-        start = time.time()
-        while True:
-            try:
-                data = self._dev.read(ENDPOINT_IN, RESPONSE_LENGTH,
-                                      timeout=MEASUREMENT_TIMEOUT_MS)
-                return self._parse(bytes(data))
-            except usb.core.USBTimeoutError:
-                if time.time() - start > MEASUREMENT_TIMEOUT_MS / 1000:
-                    raise TimeoutError("No response from C-7000 within timeout")
-                continue
+        self._send_cmd(b"RT1")      # enable remote mode
+        self._send_cmd(b"RM0")      # trigger measurement
+        self._poll_ready()           # wait for completion
+        data = self._get_result()    # retrieve 2380-byte result
+        try:
+            self._send_cmd(b"RT0")  # disable remote mode (best-effort)
+        except Exception:
+            pass
+        return self._parse(data)
 
     def _parse(self, data: bytes) -> dict:
         """
-        Parse the raw HID response packet into measurement values.
+        Parse the 2380-byte NR response.
 
-        TODO: Update this method once you have captured real packets.
-        The offsets and formats below are placeholders — replace them
-        with the actual byte positions from your Wireshark capture.
-
-        Typical C-7000 data layout (hypothetical example):
-          bytes 0-1:  CCT in Kelvin (uint16, little-endian)
-          bytes 2-3:  Duv × 10000 as signed int16 (e.g. 28 = 0.0028)
-          bytes 4:    CRI Ra (uint8)
-          bytes 5:    R9 (uint8)
-          bytes 6:    TLCI (uint8)
+        All field offsets and byte order confirmed from skreader measurement.go.
+        CCT range: 1563–100000 K; Duv range: −0.1 to +0.1.
         """
-        # Use format/offset from device_config.json if protocol was captured.
-        # Falls back to the placeholder layout when no capture data is available.
-        cfg = _load_cfg()
-        fmt    = cfg.get("parse_fmt",    _PARSE_FMT)
-        offset = cfg.get("parse_offset", _PARSE_OFFSET)
-
-        size = struct.calcsize(fmt)
-        if len(data) < offset + size:
+        if len(data) < RESPONSE_SIZE:
             raise ValueError(
-                f"Response packet too short: {len(data)} bytes "
-                f"(need {offset + size} for fmt={fmt!r} at offset={offset})"
+                f"Response too short: {len(data)} bytes (expected {RESPONSE_SIZE})"
             )
-
-        values = struct.unpack_from(fmt, data, offset=offset)
-        # Expected field order: cct, duv_raw, cri, r9[, tlci]
-        if len(values) < 4:
-            raise ValueError(f"Unexpected struct field count: {len(values)}")
-        cct_raw, duv_raw, cri, r9 = values[:4]
-        tlci = values[4] if len(values) > 4 else None
-
-        cct = int(cct_raw)
-        duv = round(duv_raw / 10000.0, 4)
-
-        result = {
-            "cct":  cct,
-            "duv":  duv,
-            "cri":  int(cri),
-            "r9":   int(r9),
-        }
-        if tlci is not None:
-            result["tlci"] = int(tlci)
-        return result
+        cct = round(struct.unpack_from(">f", data, _OFF_CCT)[0])
+        duv = round(struct.unpack_from(">f", data, _OFF_DUV)[0], 4)
+        cri = round(struct.unpack_from(">f", data, _OFF_CRI)[0])
+        r9  = round(struct.unpack_from(">f", data, _OFF_R9)[0])
+        return {"cct": cct, "duv": duv, "cri": cri, "r9": r9}
+        # TLCI is not in the standard NR response (requires FW>25 extended mode).
 
     def probe_trigger(self, cmd: bytes, timeout_ms: int = 4000) -> dict | None:
         """
-        Send `cmd` to the OUT endpoint and listen for a measurement response.
-
-        Used by POST /learn_trigger to auto-discover the remote trigger command.
-        Returns a parsed measurement dict if the response looks valid, else None.
-        Never raises — all exceptions are swallowed so the caller can iterate.
+        Legacy probe for unknown meters: send cmd and check for a valid response.
+        Not used for the C-7000 (protocol is fully known); kept for future meters.
         """
         if self._dev is None:
             return None
         try:
             self._dev.write(ENDPOINT_OUT, cmd, timeout=2000)
-            raw = bytes(self._dev.read(ENDPOINT_IN, RESPONSE_LENGTH,
-                                       timeout=timeout_ms))
+            raw = bytes(self._dev.read(ENDPOINT_IN, RESPONSE_SIZE, timeout=timeout_ms))
+            if len(raw) < RESPONSE_SIZE:
+                return None
             parsed = self._parse(raw)
-            # Sanity-check: must be a plausible light-meter measurement
             if 1667 <= parsed["cct"] <= 25000 and -0.05 <= parsed["duv"] <= 0.05:
                 return parsed
         except Exception:

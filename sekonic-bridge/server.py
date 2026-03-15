@@ -249,6 +249,11 @@ async def discover():
         "product":      sekonic["product"],
         "configured":   True,
     })
+    # C-7000 (VID 0x0A41): full protocol is confirmed from skreader; no manual
+    # capture or trigger-discovery steps needed.
+    if int(sekonic["vendor_id"], 16) == 0x0A41:
+        cfg["protocol_captured"]  = True
+        cfg["trigger_discovered"] = True
     _save_device_config(cfg)
     log.info("Discovered Sekonic: %s %s VID=%s PID=%s",
              sekonic["manufacturer"], sekonic["product"],
@@ -316,10 +321,16 @@ def _try_parse(data: bytes) -> dict | None:
 @app.post("/capture")
 async def capture():
     """
-    Listen passively on the discovered USB device for one HID interrupt report.
-    The user must press the MEASURE button on the physical C-7000.
-    Saves the raw bytes and any auto-parsed values to device_config.json.
+    Verify the meter connection by taking a test measurement.
+
+    For the Sekonic C-7000 (VID 0x0A41): uses the fully-documented protocol
+    (RT1 → RM0 → ST poll → NR) — no button press required.
+
+    For other/unknown meters: falls back to passively listening for one bulk
+    IN packet, triggered by the user pressing the physical MEASURE button.
     Times out after 30 seconds.
+
+    Saves protocol_captured=true to device_config.json on success.
     """
     if _use_mock_global:
         from meter_mock import MockMeter
@@ -327,19 +338,12 @@ async def capture():
         mock.connect()
         data = mock.measure()
         mock.disconnect()
-        raw_hex = "00" * 7  # placeholder
         cfg = _load_device_config()
-        cfg.update({
-            "protocol_captured": True,
-            "response_sample_hex": raw_hex,
-            "parse_fmt": "<HhBBB",
-            "parse_offset": 0,
-        })
+        cfg.update({"protocol_captured": True, "trigger_discovered": True})
         _save_device_config(cfg)
         return {
-            "success":          True,
+            "success":           True,
             "protocol_captured": True,
-            "raw_hex":          raw_hex,
             "cct":  data["cct"],
             "duv":  data["duv"],
             "cri":  data["cri"],
@@ -358,6 +362,35 @@ async def capture():
                     "hint": "Call GET /discover first to find the VID/PID"}
         )
 
+    loop = asyncio.get_event_loop()
+
+    # ── C-7000 fast path: protocol fully known, trigger directly ──────────────
+    if vendor_id == 0x0A41:
+        from meter_c7000_hid import C7000HID
+
+        def _test_measure():
+            m = C7000HID()
+            if not m.connect():
+                return None
+            try:
+                return m.measure()
+            finally:
+                m.disconnect()
+
+        data = await loop.run_in_executor(None, _test_measure)
+        if data is None:
+            raise HTTPException(
+                status_code=503,
+                detail={"error": "device_not_found",
+                        "hint": "Check that the C-7000 is plugged into the Pi"}
+            )
+        cfg.update({"protocol_captured": True})
+        _save_device_config(cfg)
+        log.info("Capture (C-7000 fast path): CCT=%dK CRI=%d R9=%d",
+                 data["cct"], data["cri"], data["r9"])
+        return JSONResponse(content={"success": True, "protocol_captured": True, **data})
+
+    # ── Fallback: passive bulk listen for unknown meters ─────────────────────
     try:
         import usb.core
         import usb.util
@@ -367,13 +400,10 @@ async def capture():
             detail={"error": "pyusb_not_installed", "hint": "pip install pyusb"}
         )
 
-    loop = asyncio.get_event_loop()
-
     def _listen():
         dev = usb.core.find(idVendor=vendor_id, idProduct=product_id)
         if dev is None:
             return None, "device_not_found"
-
         try:
             if dev.is_kernel_driver_active(0):
                 dev.detach_kernel_driver(0)
@@ -381,23 +411,22 @@ async def capture():
         except Exception as exc:
             return None, str(exc)
 
-        # Find the first interrupt IN endpoint
+        # Find the first bulk or interrupt IN endpoint
         cfg_obj = dev.get_active_configuration()
         ep_in = None
         for intf in cfg_obj:
             for ep in intf:
                 import usb.util as _u
-                if (_u.endpoint_direction(ep.bEndpointAddress) == _u.ENDPOINT_IN
-                        and _u.endpoint_type(ep.bmAttributes) == _u.ENDPOINT_TYPE_INTR):
+                if _u.endpoint_direction(ep.bEndpointAddress) == _u.ENDPOINT_IN:
                     ep_in = ep
                     break
             if ep_in:
                 break
 
         if ep_in is None:
-            return None, "no_interrupt_in_endpoint"
+            return None, "no_in_endpoint"
 
-        log.info("Capture: listening on %s for up to 30 s…", ep_in)
+        log.info("Capture (fallback): listening on %s for up to 30 s…", ep_in)
         deadline = time.time() + 30
         while time.time() < deadline:
             try:
@@ -408,11 +437,9 @@ async def capture():
                 continue
             except Exception as exc:
                 return None, str(exc)
-
         return None, "capture_timeout"
 
     raw, err = await loop.run_in_executor(None, _listen)
-
     if raw is None:
         raise HTTPException(
             status_code=504 if err == "capture_timeout" else 500,
@@ -421,7 +448,6 @@ async def capture():
 
     raw_hex = raw.hex()
     parsed  = _try_parse(raw)
-
     cfg.update({
         "response_sample_hex": raw_hex,
         "response_length":     len(raw),
@@ -430,18 +456,13 @@ async def capture():
     if parsed:
         cfg["parse_fmt"]    = parsed.get("_fmt", "")
         cfg["parse_offset"] = parsed.get("_offset", 0)
-
     _save_device_config(cfg)
 
-    result = {
-        "success":           True,
-        "raw_hex":           raw_hex,
-        "protocol_captured": parsed is not None,
-    }
+    result = {"success": True, "raw_hex": raw_hex,
+               "protocol_captured": parsed is not None}
     if parsed:
         result.update({k: v for k, v in parsed.items() if not k.startswith("_")})
-
-    log.info("Capture complete: %d bytes, parsed=%s", len(raw), parsed is not None)
+    log.info("Capture (fallback): %d bytes, parsed=%s", len(raw), parsed is not None)
     return JSONResponse(content=result)
 
 

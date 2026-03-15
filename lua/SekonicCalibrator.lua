@@ -1397,21 +1397,21 @@ run_bridge_setup = function(display, config)
         return
     end
 
-    -- Step 2: Capture measurement protocol
+    -- Step 2: Verify connection with a test measurement
     local step2 = MessageBox({
-        title   = "Bridge Setup \xe2\x80\x93 Step 2: Capture",
+        title   = "Bridge Setup \xe2\x80\x93 Step 2: Verify",
         message = string.format(
             "Meter found on USB:\n\n"
             .."  %s %s\n"
             .."  VID=%s  PID=%s\n\n"
-            .."Next: capture the measurement protocol.\n\n"
-            .."When you click OK:\n"
-            .."  1. Bridge listens for a measurement (~30 s)\n"
-            .."  2. Press MEASURE on your C-7000 now\n"
-            .."  3. Bridge captures and analyses the response",
+            .."Next: take a test measurement to verify the connection.\n\n"
+            .."For the C-7000 this triggers automatically \xe2\x80\x93\n"
+            .."no button press needed.\n\n"
+            .."For other meters: press MEASURE within 30 s\n"
+            .."if the bridge does not respond automatically.",
             disc_mfr, disc_prd, disc_vid, disc_pid),
         display_handle = display,
-        buttons = {"OK \xe2\x80\x93 Start Listening", "Cancel"},
+        buttons = {"OK \xe2\x80\x93 Test Measurement", "Cancel"},
     })
     if step2 ~= 1 then return end
 
@@ -1437,11 +1437,11 @@ run_bridge_setup = function(display, config)
     if not cap_ok then
         local cap_err = cap_body:match('"error"%s*:%s*"([^"]+)"') or "unknown"
         MessageBox({
-            title   = "Capture Failed",
+            title   = "Verification Failed",
             message = string.format(
                 "No measurement received.\n\nError: %s\n\n"
-                .."Make sure you pressed MEASURE on the C-7000\n"
-                .."during the listening window.", cap_err),
+                .."Check that the C-7000 is plugged in and powered.\n"
+                .."For other meters: try pressing MEASURE during the window.", cap_err),
             display_handle = display,
             buttons = {"OK"},
         })
