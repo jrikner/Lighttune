@@ -78,7 +78,10 @@ If tradeoffs arise, accuracy targets are not sacrificed for speed—but the defa
 | v1 includes plugin + bridge | User priority: minimal typing at FOH with C-7000 | — Pending |
 | Topology 2: Pi bridge now, research direct HTTP later | Pragmatic v1; leave door open for native device APIs | — Pending |
 | Dual core value: speed + accuracy | Both required for broadcast FOH acceptance | — Pending |
-| GSD replan from scratch | Prior ad-hoc merges and doc drift; structured phase delivery | — Pending |
+| Bridge auth (shared secret) | Simple `X-Bridge-Key` header if MA3 can send it; reject unsigned requests on Pi | — Pending |
+| v1 proof = connect + display | First ship gate: plugin↔bridge round-trip and measurement values shown in UI | — Pending |
+| Auto-loop: fixed target xy (v1) | Re-apply session goal chromaticity + re-measure until `goals_met`; sufficient if fixtures converge on their own | — Pending |
+| Iterative correction math (v2) | Delta-based target adjustment deferred until base connect→measure→display→apply works | — Pending |
 
 ## Evolution
 

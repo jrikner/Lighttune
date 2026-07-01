@@ -62,7 +62,7 @@ None yet.
 ### Blockers/Concerns
 
 - Branch drift between sekonic-remote-api-research and Lighttune-experimental (addressed in Phase 1)
-- Closed-loop `get_correction` gap may affect auto-loop acceptance (scope in Phase 2/7)
+- Closed-loop iterative correction math deferred to v2 — v1 auto-loop uses fixed target xy + re-measure (user decision 2026-07-01)
 
 ## Deferred Items
 
