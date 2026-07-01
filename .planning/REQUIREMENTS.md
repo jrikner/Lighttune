@@ -37,6 +37,7 @@
 - [ ] **MTR-05**: Auto-loop after remote measure (max 3 cycles) using `goals_met()` with operator exit
 - [ ] **MTR-06**: Bridge Status and setup wizard reachable from plugin main menu
 - [ ] **MTR-07**: Mock meter mode for dev (`--mock` / MockMeter) with realistic improving readings
+- [ ] **MTR-08**: Bridge rejects unauthenticated requests when `bridge_api_key` is configured (shared secret in plugin + bridge config)
 
 ### Fixture database & history
 
@@ -116,6 +117,7 @@ Deferred to future release.
 | MTR-05 | Phase 5 | Pending |
 | MTR-06 | Phase 5 | Pending |
 | MTR-07 | Phase 4 | Pending |
+| MTR-08 | Phase 4 | Pending |
 | DB-01 | Phase 2 | Pending |
 | DB-02 | Phase 6 | Pending |
 | DB-03 | Phase 6 | Pending |
