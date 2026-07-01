@@ -77,7 +77,8 @@ Deferred to future release.
 
 ### Advanced features
 
-- **ADV-01**: Optional bridge authentication (HMAC or token) for stricter show IT policies
+- **CAL-07**: Iterative closed-loop correction math — adjust target chromaticity from measured error (not fixed goal re-apply each loop)
+- **ADV-01**: Stronger bridge auth (HMAC) if shared API key is insufficient for show IT
 - **ADV-02**: Community fixture database sync (manual export remains v1; automated sync deferred)
 - **ADV-03**: TM-30 / TLMF / flicker metrics beyond TLCI
 
