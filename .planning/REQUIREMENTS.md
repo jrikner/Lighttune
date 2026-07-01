@@ -133,10 +133,10 @@ Deferred to future release.
 | UAT-03 | Phase 7 | Pending |
 
 **Coverage:**
-- v1 requirements: 35 total
-- Mapped to phases: 35
+- v1 requirements: 36 total
+- Mapped to phases: 36
 - Unmapped: 0
 
 ---
 *Requirements defined: 2026-07-01*  
-*Last updated: 2026-07-01 after roadmap creation (pending roadmapper)*
+*Last updated: 2026-07-01 after roadmap creation*
