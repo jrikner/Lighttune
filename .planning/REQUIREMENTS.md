@@ -30,7 +30,7 @@
 
 ### Meter & bridge integration
 
-- [ ] **MTR-01**: Pi bridge serves `/status`, `/measure`, `/discover` on show LAN (default port 8765)
+- [ ] **MTR-01**: Thin bridge serves `/status`, `/measure`, minimal `/discover` on show LAN — raw meter fields only
 - [ ] **MTR-02**: C-7000 USB bulk driver on Pi (skreader-derived protocol); renamed/refactored from HID misnomer
 - [ ] **MTR-03**: Plugin triggers remote measurement over HTTP/1.0 (LuaSocket TCP); parses MeasurementRecord JSON
 - [ ] **MTR-04**: Remote measure UI: retry, enter manually, or cancel on bridge failure
@@ -63,7 +63,7 @@
 
 - [ ] **UAT-01**: End-to-end validated on real GrandMA3 1.6+ with Pi bridge and C-7000
 - [ ] **UAT-02**: `require("socket")` / LuaSocket TCP verified on target console build
-- [ ] **UAT-03**: Operator completes one fixture group calibration in under five minutes using remote measure path
+- [ ] **UAT-03**: Operator triggers remote measure from plugin, sees CCT/Duv/CRI/R9/TLCI in plugin UI (connection back-and-forth + results displayed)
 
 ## v2 Requirements
 

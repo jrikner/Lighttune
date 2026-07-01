@@ -62,7 +62,7 @@ Brownfield replan: cherry-pick proven commits onto main, keep **one GrandMA3 plu
 **Success Criteria** (what must be TRUE):
   1. Bridge exposes only `/status`, `/measure`, and minimal `/discover` (USB present) on show LAN (default port 8765)
   2. C-7000 read via USB bulk; returns raw `{ cct, duv, cri, r9, tlci? }` — no color math, goals, or SetColor on device
-  3. Bridge codebase is minimal (target: strip HID wizard, trigger-learn, and duplicate business logic from experimental `server.py`)
+  3. When `bridge_api_key` is set, bridge rejects requests without matching `X-Bridge-Key` header; plugin sends key from `config.json`
   4. Mock mode returns realistic readings for dev without hardware
 **Plans**: TBD
 

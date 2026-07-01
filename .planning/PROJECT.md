@@ -34,7 +34,7 @@ If tradeoffs arise, accuracy targets are not sacrificed for speed—but the defa
 - [ ] Research: whether Sekonic or other meters expose native HTTP (future topology; v1 stays Pi bridge)
 - [ ] Shared test strategy: color math and DB logic tested once, not duplicated in `test_color_math.lua`
 - [ ] Align docs, version, and `plugin.xml` with implementation (no community-upload or GDTF-on-disk false claims)
-- [ ] Production-ready bridge: setup, discovery, mock dev path, operator-facing status in plugin
+- [ ] **Lightweight bridge auth**: shared secret (API key header) on `/measure` and `/status` if feasible in MA3 Lua — show LAN + auth defense-in-depth
 - [ ] Merge path: **cherry-pick** proven commits from experimental/research branches onto main (not wholesale branch merge)
 
 ### Out of Scope
