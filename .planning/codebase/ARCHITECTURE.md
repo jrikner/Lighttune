@@ -5,235 +5,255 @@
 
 ## System Overview
 
+Lighttune is a **dual-component color-calibration system** for GrandMA3 lighting consoles. The **MA3 Lua plugin** (`lua/SekonicCalibrator.lua`) drives fixture correction from Sekonic spectrometer readings. On production branches it is **standalone** (manual meter entry). On Sekonic experimental branches it adds a **Raspberry Pi bridge** (`sekonic-bridge/`) that exposes the C-7000 over HTTP so the console can trigger remote measurements and auto-loop calibration.
+
 ```text
-┌─────────────────────────────────────────────────────────────────────────┐
-│                     GrandMA3 Console (Host Runtime)                      │
-├─────────────────────────────────────────────────────────────────────────┤
-│  plugin.xml  →  ComponentLua  →  main(display)  in SekonicCalibrator.lua│
-├──────────────┬──────────────────┬───────────────────┬───────────────────┤
-│  UI Layer    │  Orchestration   │  Pure Logic       │  MA3 Integration  │
-│  MessageBox  │  main() loops    │  Color math       │  DataPool/Patch   │
-│  wizards     │  session/group   │  JSON DB helpers  │  Cmd / SetColor   │
-│  (Sec 3)     │  (Sec 6)         │  (Sec 2, 2b)      │  (Sec 3b, 4)      │
-└──────┬───────┴────────┬─────────┴─────────┬─────────┴─────────┬─────────┘
-       │                │                   │                   │
-       ▼                ▼                   ▼                   ▼
-┌──────────────┐ ┌──────────────┐ ┌─────────────────┐ ┌─────────────────────┐
-│  Operator    │ │  Session     │ │  test_color_    │ │  Fixture groups     │
-│  (Sekonic    │ │  state in    │ │  math.lua       │ │  in showfile patch  │
-│  readings)   │ │  memory      │ │  (dev host)     │ │  (GDTF via MA3)     │
-└──────────────┘ └──────┬───────┘ └─────────────────┘ └─────────────────────┘
-                        │
-                        ▼
-              ┌─────────────────────┐
-              │  Local persistence  │
-              │  data/fixture_log   │
-              │  .json, config.json │
-              └─────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                    GrandMA3 Console @ FOH (show network)                      │
+│  plugin.xml → lua/SekonicCalibrator.lua → main(display)                       │
+│    Sec 2   color math          Sec 4   calibrate_group() → SetColor(xyY|HSB)  │
+│    Sec 3   UI / measurement    Sec 5   fixture_log.json (local append-only)   │
+│    Sec 2c  bridge HTTP client  Sec 6   outer/inner calibration loops          │
+└───────────────────────────────┬──────────────────────────────────────────────┘
+                                │ HTTP/1.0 over TCP (LuaSocket require("socket"))
+                                │ POST /measure  GET /status  GET /discover …
+                                ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│              Raspberry Pi bridge (sekonic-bridge/, port 8765)                 │
+│  server.py (FastAPI + uvicorn) → meter backend (C7000HID | MockMeter)         │
+│  device_config.json — VID/PID, protocol/trigger discovery state              │
+└───────────────────────────────┬──────────────────────────────────────────────┘
+                                │ USB bulk (pyusb)  RT1/RM0/ST/NR/RT0 protocol
+                                ▼
+                        [Sekonic C-7000 USB]
 ```
+
+**Branch status (see `.planning/codebase/_BRANCH-SCOPE.md`):**
+
+| Branch | Plugin | Bridge | Status |
+|--------|--------|--------|--------|
+| `origin/claude/lighttune-main` | v0.4, manual entry only | absent | Production baseline |
+| `origin/claude/sekonic-remote-api-research-HdMTl` | v0.5, bridge + auto-loop | full `sekonic-bridge/` | Latest Sekonic work |
+| `origin/Lighttune-experimental` | v0.5 (minor Lua diffs) | merged PR #2, refined HID driver | Integration branch |
+| `origin/cursor/setup-dev-environment-4246` | same as experimental | + dev env notes | Dev setup |
+| `cursor/install-gsd-core-342d` (current checkout) | not present in tree | not present | GSD tooling only |
+
+Sekonic remote API is **not merged** into `claude/lighttune-main` as of 2026-07-01.
 
 ## Component Responsibilities
 
-| Component | Responsibility | File |
-|-----------|----------------|------|
-| Plugin manifest | Registers the Lua component with GrandMA3 | `plugin.xml` |
-| Entry point | `main(display)` — menu, calibration orchestration, error boundary | `lua/SekonicCalibrator.lua` |
-| Color math | CCT→xy, Duv correction, quality rating, gel hints (no MA3 deps) | `lua/SekonicCalibrator.lua` §2 |
-| Fixture database | Append-only JSON log, best-value flags, history lookup | `lua/SekonicCalibrator.lua` §2b, §5 |
-| UI wizard | MessageBox-driven prompts for goals, measurements, assessment | `lua/SekonicCalibrator.lua` §3 |
-| Capability detection | Read GDTF-derived DMX attributes from MA3 Patch API | `lua/SekonicCalibrator.lua` §3b |
-| Fixture control | Select group, apply xyY/HSB color correction | `lua/SekonicCalibrator.lua` §4 |
-| Data I/O | Resolve plugin paths, load config, persist fixture_log.json | `lua/SekonicCalibrator.lua` §5 |
-| Unit tests | Standalone Lua 5.4 tests mirroring color math and DB logic | `test_color_math.lua` |
+| Component | Responsibility | Branch / path |
+|-----------|----------------|---------------|
+| GrandMA3 plugin manifest | Registers Lua component | `plugin.xml` (all product branches) |
+| SekonicCalibrator.lua | Session UI, color math, fixture apply, optional bridge client | `lua/SekonicCalibrator.lua` |
+| sekonic-bridge server | REST API, USB meter control, device discovery persistence | `sekonic-bridge/server.py` (Sekonic branches only) |
+| C-7000 USB driver | Bulk protocol (skreader-derived), parse NR response | `sekonic-bridge/meter_c7000_hid.py` |
+| Mock meter | Simulated improving readings for dev/test | `sekonic-bridge/meter_mock.py` |
+| USB discovery CLI | Standalone VID/PID scan, writes `device_config.json` | `sekonic-bridge/discover_device.py` |
+| Local fixture DB | Append-only JSON history per make/model/kelvin | `data/fixture_log.json` (runtime) |
+| Config | `github_username`; Sekonic branches add `bridge_ip`, `bridge_port` | `data/config.json.example` → `config.json` |
 
 ## Pattern Overview
 
-**Overall:** Monolithic sectioned Lua plugin — a single ~1,430-line module organized by numbered sections, exported as one GrandMA3 `ComponentLua` entry point.
+**Overall:** Monolithic Lua plugin (single file, sectioned) + optional sidecar Python HTTP service on Pi.
 
-**Key Characteristics:**
-- All runtime code lives in one file because GrandMA3 plugins load a single Lua component per `plugin.xml` entry; there is no multi-file `require` tree in the deployed artifact.
-- Pure functions (color math, JSON helpers) are colocated with MA3-coupled UI and I/O in the same file, separated by comment banners rather than packages.
-- User interaction is entirely synchronous and dialog-driven via `MessageBox`; there is no event loop, web UI, or background worker.
-- External hardware (Sekonic spectrometer) is out-of-band: the operator reads the meter and types values into prompts.
-- Persistence is local file I/O only (`io.open`/`io.write`); network upload is explicitly out of scope due to MA3 Lua sandbox limits.
+**Key characteristics:**
+- **No HTTPS on MA3:** Plugin uses raw HTTP/1.0 over LuaSocket TCP; bridge must be on trusted show LAN.
+- **Manual fallback preserved:** v0.5 always allows manual Sekonic entry when bridge fails or operator chooses it.
+- **Append-only fixture history:** Every measurement kept; `recompute_best_flags()` marks bests for pre-fill.
+- **MA3 Patch API for GDTF:** No direct GDTF file read (`io.popen` unavailable); capabilities from `DataPool → Groups → FixtureType → DMXModes`.
 
 ## Layers
 
-**Constants (§1):**
-- Purpose: Thresholds, mode enums, meter types, gel step tables
-- Location: `lua/SekonicCalibrator.lua` lines 15–47
-- Contains: `QUALITY`, `GOAL_*`, `MODE_*`, `METER_*`, `GEL_STEPS`
-- Depends on: Lua standard library only
-- Used by: All subsequent sections
+**Presentation (MA3 UI — Section 3):**
+- Purpose: Operator dialogs via `MessageBox`, number inputs, session/group wizards.
+- Location: `lua/SekonicCalibrator.lua` Section 3 (+ bridge status/setup in v0.5 Section 2c callers).
+- Depends on: `display` handle, config, optional bridge functions.
+- v0.5 adds: main menu **Bridge Status**, setup wizard, remote vs manual measurement choice.
 
-**Pure logic — color math (§2):**
-- Purpose: Chromaticity transforms and quality assessment without console APIs
-- Location: `lua/SekonicCalibrator.lua` lines 49–200
-- Contains: `cct_to_xy`, `get_correction`, `rate_quality`, `gel_hint`, base64 helpers
-- Depends on: `math`, string/table ops
-- Used by: §3 assessment UI, §4 color application, §6 orchestration
+**Domain logic (Color math — Section 2):**
+- Purpose: CCT↔xy, Duv correction, quality ratings, gel hints.
+- Location: `lua/SekonicCalibrator.lua` Section 2.
+- Pure functions; testable via `test_color_math.lua` on a Lua host.
 
-**Pure logic — fixture database (§2b):**
-- Purpose: Minimal JSON encode/decode and append-only record management
-- Location: `lua/SekonicCalibrator.lua` lines 202–375
-- Contains: `json_parse_db_array`, `append_fixture_record`, `recompute_best_flags`, `find_best_for_fixture`
-- Depends on: Pattern-matching JSON (no external JSON library)
-- Used by: §5 persistence, §3 history viewer, §6 session pre-fill
+**Bridge client (v0.5 only — Section 2c):**
+- Purpose: HTTP client, measurement fetch, status check, setup wizard HTTP calls.
+- Location: `lua/SekonicCalibrator.lua` Section 2c.
+- Depends on: `require("socket")`, `config.bridge_ip` / `config.bridge_port` (default 8765).
 
-**UI layer (§3):**
-- Purpose: Collect session goals, measurements, and present assessment summaries
-- Location: `lua/SekonicCalibrator.lua` lines 377–1047
-- Contains: `get_session_goals`, `get_measurement_params`, `show_assessment`, `show_fixture_history`
-- Depends on: GrandMA3 `MessageBox`, §2 math helpers
-- Used by: `main()` in §6
+**Fixture integration (Sections 3b, 4):**
+- Purpose: Read patch capabilities; select group; apply corrected xyY (fallback HSB).
+- Location: `lua/SekonicCalibrator.lua` Sections 3b, 4.
+- Uses: `Cmd('Group …')`, `SetColor("xyY"|"HSB", …)`.
 
-**MA3 integration — capabilities (§3b):**
-- Purpose: Infer fixture color capabilities from parsed GDTF data in the patch
-- Location: `lua/SekonicCalibrator.lua` lines 1049–1148
-- Contains: `read_capabilities_from_patch`, `get_fixture_from_patch`
-- Depends on: `DataPool()`, `Groups`, `FixtureType`, `DMXModes` API (all wrapped in `pcall`)
-- Used by: §3 hints, §6 per-group setup
+**Persistence (Section 5):**
+- Purpose: Resolve plugin paths via `GetPath(Enums.PathType.PluginLibrary)`; read/write `fixture_log.json`, `config.json`.
+- Location: `lua/SekonicCalibrator.lua` Section 5.
 
-**Fixture application (§4):**
-- Purpose: Apply computed chromaticity to a fixture group on the console
-- Location: `lua/SekonicCalibrator.lua` lines 1150–1185
-- Contains: `select_group`, `apply_color_xyY`, `apply_color_hsb`, `calibrate_group`
-- Depends on: `Cmd()`, `SetColor()`, §2 `xy_to_rgb`/`rgb_to_hsb`
-- Used by: §6 inner loop and historical pre-apply
+**Bridge service (Python — Sekonic branches):**
+- Purpose: FastAPI app, meter lifecycle, discovery/capture/learn endpoints, `/measure` with asyncio lock.
+- Location: `sekonic-bridge/server.py`.
+- Depends on: `meter_c7000_hid.C7000HID` or `meter_mock.MockMeter`.
 
-**Data logging (§5):**
-- Purpose: Resolve plugin filesystem paths and read/write local JSON files
-- Location: `lua/SekonicCalibrator.lua` lines 1187–1279
-- Contains: `get_plugin_dir`, `get_data_dir`, `load_config`, `save_fixture_log_local`
-- Depends on: `GetPath`, `GetPathSeparator`, `HostOS`, `io.open`
-- Used by: §6 session start, post-group logging, §3 history viewer
-
-**Orchestration (§6):**
-- Purpose: Top-level workflow — menu, outer group loop, inner measure/apply loop
-- Location: `lua/SekonicCalibrator.lua` lines 1281–1431
-- Contains: `main(display, ...)`, `return main`
-- Depends on: All prior sections
-- Used by: GrandMA3 plugin runtime (invoked when operator runs the plugin)
+**Hardware abstraction (Python):**
+- Purpose: USB connect, remote measure sequence, parse 2380-byte NR payload.
+- Location: `sekonic-bridge/meter_c7000_hid.py`.
+- Protocol: `RT1` → `RM0` → poll `ST` → `NR` → `RT0` (from [skreader](https://github.com/kinglevel/skreader)).
 
 ## Data Flow
 
-### Primary Request Path — Start Calibration
+### Production path (v0.4 — `lighttune-main`)
 
-1. Operator triggers plugin → GrandMA3 loads `lua/SekonicCalibrator.lua` and calls `main(display)` (`lua/SekonicCalibrator.lua:1285`, `1431`).
-2. Main menu → user selects **Start Calibration** (`lua/SekonicCalibrator.lua:1289–1307`).
-3. `get_session_goals` collects meter model, calibration mode (target vs reference), CCT/Duv targets, and CRI/R9/TLCI goals (`lua/SekonicCalibrator.lua:496–575`, `1310–1311`).
-4. `load_config` reads optional `config.json` for contributor name; `fixture_log.json` loaded into memory (`lua/SekonicCalibrator.lua:1245–1253`, `1313–1322`).
-5. **Outer loop** — for each group:
-   - `get_group_input` → `get_fixture_model_input` (patch lookup with manual fallback) (`lua/SekonicCalibrator.lua:1326–1329`).
-   - `read_capabilities_from_patch` → capability table for hints (`lua/SekonicCalibrator.lua:1335`).
-   - `find_best_for_fixture` → optional historical pre-apply via `calibrate_group` (`lua/SekonicCalibrator.lua:1341–1358`).
-6. **Inner loop** — until operator marks group done:
-   - `get_measurement_params` — operator enters Sekonic readings (`lua/SekonicCalibrator.lua:1370–1371`).
-   - `get_correction` computes target xy from goals vs measured CCT/Duv (`lua/SekonicCalibrator.lua:1374–1375`).
-   - `show_assessment` presents quality ratings and feature-aware hints; user chooses Apply/Skip (`lua/SekonicCalibrator.lua:1377`).
-   - On Apply: `calibrate_group` → `Cmd('Group …')` then `SetColor("xyY", …)` with HSB fallback (`lua/SekonicCalibrator.lua:1379–1381`, `1176–1184`).
-7. After inner loop: `log_fixture_data` appends to `data/fixture_log.json`, updates in-memory records, appends to `session_log` (`lua/SekonicCalibrator.lua:1387–1415`).
-8. `ask_calibrate_another` controls outer loop exit; `show_session_summary` displays final report (`lua/SekonicCalibrator.lua:1418–1420`).
+1. Operator runs plugin from MA3 → `main(display)` (`lua/SekonicCalibrator.lua` ~1285).
+2. Session goals collected → outer loop per fixture group.
+3. `get_measurement_params()` prompts for CCT, Duv, CRI, R9, (TLCI if C-7000) — **manual keyboard entry**.
+4. `get_correction()` computes target xy from goals vs measured.
+5. `show_assessment()` → optional `calibrate_group()` → `SetColor`.
+6. Inner loop repeats until `ask_group_done()`; results appended to `data/fixture_log.json`.
 
-### Secondary Flow — View Fixture History
+### Remote measurement path (v0.5 — Sekonic branches)
 
-1. Main menu → **View Fixture History** (`lua/SekonicCalibrator.lua:1304–1306`).
-2. `show_fixture_history` reads `data/fixture_log.json`, prompts for search, groups by Kelvin, displays tabular results with ★ best markers (`lua/SekonicCalibrator.lua:958–1047`).
+1. Operator configures `config.json` with `bridge_ip` and optional `bridge_port`.
+2. Pi runs `server.py` (systemd `sekonic-bridge.service` or `./start.sh`); C-7000 on USB.
+3. Plugin `get_measurement_params()` detects `config.bridge_ip` → offers **Remote** vs **Manual** (`~690–755`).
+4. Remote: `bridge_fetch_measurement(config)` → `_http_request("POST", host, port, "/measure", 38)` (`~1168–1190`).
+5. Bridge: `POST /measure` → executor runs `_meter.measure()` → USB bulk sequence → JSON `{cct, duv, cri, r9, tlci?, timestamp}`.
+6. Plugin validates ranges, returns `measured` table; same correction/apply pipeline as v0.4.
 
-### Development Test Path
+### Auto-loop calibration (v0.5, bridge mode)
 
-1. Developer runs `lua5.4 test_color_math.lua` on a host machine (not on the console).
-2. Inline copies of §2 and §2b functions are exercised with assert helpers — no MA3 APIs involved (`test_color_math.lua:57–59`).
+When `bridge_ip` is set and operator stays in remote mode (`~1844–1988`):
 
-**State Management:**
-- Session state (`goals`, `session_log`, `fixture_records`) lives in `main()` local variables for the plugin invocation lifetime.
-- Persistent state is append-only JSON in `data/fixture_log.json`; `best_*` flags recomputed on every write.
-- No global mutable module state beyond local function closures.
+1. **Attempt 1:** Full measurement dialog (remote or manual choice).
+2. **Attempts 2+:** Auto `bridge_fetch_measurement()` without re-prompting mode.
+3. After each reading: `goals_met(measured, goals)` — CCT ±150 K, Duv within acceptable band, optional CRI/R9/TLCI mins.
+4. If not met: `show_assessment()` → `calibrate_group()` → loop (max **3 cycles** per stuck window, then Accept / Try Again / Skip).
+5. If met: success dialog → next group.
+
+Manual mode unchanged: `ask_group_done()` after each attempt.
+
+### Bridge setup / discovery flow (v0.5)
+
+Invoked from **Bridge Status** → `run_bridge_setup()` or inline trigger discovery:
+
+| Step | Plugin HTTP call | Bridge action |
+|------|------------------|---------------|
+| 1 Discover | `GET /discover` | USB scan (pyusb), save VID/PID to `device_config.json`; C-7000 (VID `0x0A41`) auto-flags protocol |
+| 2 Verify | `POST /capture` | C-7000 fast path: test `measure()`; else passive bulk listen |
+| 3 Trigger (optional) | `POST /learn_trigger` | Probe HID candidates (~2 min); C-7000 skips (bulk protocol known) |
+
+Status anytime: `GET /status` → connected, `device_configured`, `protocol_captured`, `trigger_discovered`.
+
+### End-to-end physical topology
+
+```text
+[C-7000] ──USB──► [Pi: meter_c7000_hid] ──JSON──► [MA3 plugin: bridge_fetch_measurement]
+                                                      │
+                                                      ▼
+                                            [Fixture group in patch]
+                                                      │
+                                                      ▼
+                                            SetColor(xyY) correction applied
+                                                      │
+                                                      ▼
+                                            Re-measure (auto-loop until goals met)
+```
 
 ## Key Abstractions
 
-**Session goals table:**
-- Purpose: Captures one calibration session's targets and quality tracking modes
-- Examples: Returned by `get_session_goals` — `{ meter, mode, ref_group, cct, duv, cri, r9, tlci }` where each spectral goal is `{ mode=GOAL_MAX|GOAL_MIN|GOAL_SKIP, value? }`
-- Pattern: Plain Lua tables passed through UI and orchestration layers
+**Measurement record (Lua):**
+- Purpose: Normalized spectrometer reading used by correction and DB.
+- Shape: `{ cct, duv, cri, r9, tlci? }`.
+- Sources: manual entry, or JSON parsed from bridge `/measure` body.
 
 **Correction result:**
-- Purpose: Target chromaticity and deltas for assessment display and application
-- Examples: `get_correction` return — `{ target_x, target_y, delta_cct, delta_duv }`
-- Pattern: Computed once per measurement attempt; consumed by `show_assessment` and `calibrate_group`
+- Purpose: Target chromaticity for MA3.
+- Produced by: `get_correction(tgt_cct, tgt_duv, meas_cct, meas_duv)` → `{ target_x, target_y, delta_cct, delta_duv }`.
 
-**Capabilities table:**
-- Purpose: Feature flags driving conditional console/gel hints
-- Examples: `{ has_tint, has_ctb, has_cto, has_rgb, has_color_wheel, has_color_wheel_filters, gdtf_cri, gdtf_cct }` from `read_capabilities_from_patch`
-- Pattern: `nil` when patch API unavailable; boolean flags default false
+**Meter backend (Python protocol):**
+- Purpose: Pluggable driver behind `server.py`.
+- Implementations: `C7000HID` (real USB), `MockMeter` (`--mock` CLI).
+- Interface: `connect()`, `is_connected()`, `disconnect()`, `measure() → dict`.
 
-**Fixture DB record:**
-- Purpose: One spectrometer measurement tied to make/model/kelvin
-- Examples: Schema documented in `README.md`; encoded by `json_encode_db_record`
-- Pattern: Append-only array; `recompute_best_flags` marks winners per `(make, model, kelvin)` group
+**Device config persistence:**
+- Purpose: Bridge self-configuration across reboots.
+- File: `sekonic-bridge/device_config.json` (runtime, not in git).
+- Fields: `vendor_id`, `product_id`, `configured`, `protocol_captured`, `trigger_discovered`, optional `trigger_cmd_hex`.
 
 ## Entry Points
 
-**GrandMA3 plugin runtime:**
-- Location: `plugin.xml` → `<ComponentLua FileName="lua/SekonicCalibrator.lua" />`
-- Triggers: Operator runs plugin from Plugin Pool / assigned executor
-- Responsibilities: Load Lua, invoke exported `main(display, …)`
+**GrandMA3 plugin:**
+- Location: `plugin.xml` → `ComponentLua` → `return main` at end of `lua/SekonicCalibrator.lua`.
+- Triggers: Operator launches SekonicCalibrator from MA3 plugin pool.
+- v0.4 menu: Start Calibration | View Fixture History | Cancel.
+- v0.5 menu: adds **Bridge Status** (3rd button).
 
-**Lua module export:**
-- Location: `lua/SekonicCalibrator.lua:1431` — `return main`
-- Triggers: GrandMA3 ComponentLua loader
-- Responsibilities: Single callable entry; all other functions are local
+**Bridge HTTP server:**
+- Location: `sekonic-bridge/server.py` → `main()` → `uvicorn.run(app, host, port)`.
+- Triggers: systemd unit, `./start.sh`, or `python3 server.py [--mock]`.
+- Default bind: `0.0.0.0:8765`.
 
-**Standalone unit test runner:**
-- Location: `test_color_math.lua` (run via `lua5.4 test_color_math.lua`)
-- Triggers: Developer CLI on host OS
-- Responsibilities: Validate color math and DB helper parity without console
+**Standalone USB discovery:**
+- Location: `sekonic-bridge/discover_device.py`.
+- Triggers: Manual CLI on Pi when debugging USB enumeration.
+
+## Branch Deltas (Plugin)
+
+| Feature | v0.4 (`lighttune-main`) | v0.5 (Sekonic branches) |
+|---------|-------------------------|-------------------------|
+| Version string | `SekonicCalibrator v0.4` | `SekonicCalibrator v0.5` |
+| Lines | ~1431 | ~2046 (+615) |
+| `load_config()` | `github_username` only | + `bridge_ip`, `bridge_port` |
+| Measurement input | Manual only | Remote via bridge + manual fallback |
+| HTTP client | none | Section 2c: `_http_request`, `bridge_fetch_measurement` |
+| Inner loop | `ask_group_done()` always | Auto-loop when bridge active |
+| Main menu | 3 actions | 4 actions (+ Bridge Status) |
+| Setup wizard | none | `run_bridge_setup`, `show_bridge_status` |
+
+`Lighttune-experimental` vs `sekonic-remote-api-research-HdMTl`: same architecture; experimental refines `meter_c7000_hid.py` (skreader offsets), simplifies mock progression, trims redundant server discovery paths (~223 insertions / 301 deletions across 5 files).
 
 ## Architectural Constraints
 
-- **Threading:** Single-threaded synchronous Lua; each `MessageBox` blocks until the operator responds. No coroutines or async I/O.
-- **Global state:** No module-level mutable globals. All functions are `local`; state scoped to `main()` locals or function parameters.
-- **Circular imports:** Not applicable — monolithic single file, no `require` graph.
-- **Sandbox limits:** `io.popen`, `os.execute`, and HTTPS are unavailable in GrandMA3 Lua. GDTF files cannot be read from disk; capabilities must come from the Patch API. Community upload is manual export only.
-- **Filesystem:** Plugin assumes `data/` directory exists at install time; no runtime `mkdir`. Paths resolved via `GetPath(Enums.PathType.PluginLibrary)` with OS-specific fallbacks (`lua/SekonicCalibrator.lua:1211–1234`).
+- **Threading:** MA3 Lua is single-threaded; bridge uses asyncio with `run_in_executor` for blocking USB I/O and `_measurement_lock` for concurrent `/measure` rejection.
+- **Global state:** Bridge module globals `_meter`, `_last_error`, `_use_mock_global`; one meter instance per server process.
+- **MA3 sandbox:** No `io.popen`, `os.execute`, or HTTPS; only documented LuaSocket TCP (via `require("socket")`). Community GitHub upload not implemented.
+- **Network trust:** Plain HTTP on show VLAN; no auth on bridge endpoints.
+- **TLCI:** C-7000 NR response omits TLCI in standard mode; mock meter supplies it for loop testing.
 
 ## Anti-Patterns
 
-### Duplicating pure logic in tests instead of sharing a module
+### Assuming community upload from the console
 
-**What happens:** `test_color_math.lua` contains inline copies of color math and DB functions rather than `require`-ing `SekonicCalibrator.lua`.
-**Why it's wrong:** Changes to §2/§2b must be manually mirrored in tests or coverage drifts.
-**Do this instead:** When extracting shared logic, keep the monolithic deploy file but consider a build step or documented sync checklist; today, edits to `cct_to_xy`, `get_correction`, or JSON helpers must update both `lua/SekonicCalibrator.lua` and `test_color_math.lua`.
+**What happens:** Expecting the plugin to push `fixture_log.json` to GitHub from MA3.
+**Why it's wrong:** GrandMA3 Lua lacks HTTPS; only plain FTP is documented.
+**Do this instead:** Export `data/fixture_log.json` manually; use `github_username` as contributor label only (`log_fixture_data` in Section 5).
 
-### Calling MA3 APIs without pcall
+### Using curl/os.execute for bridge calls
 
-**What happens:** Unhandled API failures crash the plugin mid-session.
-**Why it's wrong:** Patch structure varies by showfile; missing groups or attributes are common.
-**Do this instead:** Wrap all `DataPool`, `Cmd`, `SetColor`, and path API calls in `pcall` as done in `read_capabilities_from_patch`, `select_group`, and `main` (`lua/SekonicCalibrator.lua:1081`, `1155`, `1286`).
+**What happens:** Shelling out to HTTP clients from Lua.
+**Why it's wrong:** `io.popen` / `os.execute` are unavailable in MA3.
+**Do this instead:** Use Section 2c `_http_request` with LuaSocket TCP (`bridge_fetch_measurement`).
 
-### Assuming shell or network from plugin code
+### Treating sekonic-bridge as present on main
 
-**What happens:** Attempts to `unzip` GDTF files or POST to GitHub fail silently or error.
-**Why it's wrong:** MA3 Lua sandbox explicitly excludes these capabilities (documented in §3b and §5 comments).
-**Do this instead:** Use Patch API for GDTF-derived data; document manual `fixture_log.json` export for community sharing (`README.md`, `lua/SekonicCalibrator.lua:1190–1195`).
+**What happens:** Deploying Pi bridge docs while checkout is `lighttune-main`.
+**Why it's wrong:** `sekonic-bridge/` exists only on Sekonic branches; main plugin has no bridge client.
+**Do this instead:** Merge or checkout `Lighttune-experimental` / `sekonic-remote-api-research-HdMTl` for full stack; use v0.4 manual workflow on main.
 
 ## Error Handling
 
-**Strategy:** Defensive `pcall` at MA3 API boundaries; top-level `pcall` in `main` catches unexpected errors and shows a single error dialog.
+**Strategy:** `pcall` around MA3 API calls and main entry; bridge returns HTTP status + JSON `error` field; plugin surfaces `MessageBox` retry/manual/cancel flows.
 
 **Patterns:**
-- API calls (`DataPool`, `Cmd`, `SetColor`, `GetPath`): wrapped in `pcall`, return `nil`/`false` + error string on failure
-- User cancellation: `MessageBox` returning `nil` or Cancel button index propagates `return nil` up the wizard chain
-- File I/O: silent no-op when `io.open` fails (empty records, skip logging)
-- Fatal unexpected errors: caught by outer `pcall` in `main`, displayed via "Unexpected Error" MessageBox (`lua/SekonicCalibrator.lua:1423–1428`)
+- Plugin: malformed bridge JSON → `nil, "malformed_response"`; connection failure → retry / manual / cancel dialogs.
+- Bridge: meter disconnected → 503; measurement timeout → 504; concurrent measure → 409.
+- USB: kernel driver detach on Linux before claim; best-effort `RT0` after measure.
 
 ## Cross-Cutting Concerns
 
-**Logging:** No structured logger. Operator-facing feedback via `MessageBox` only. Persistent audit trail via append-only `fixture_log.json`.
-
-**Validation:** Input ranges enforced in `get_number_input` (CCT 1667–25000, Duv ±0.02, CRI/R9/TLCI 0–100) with up to 3 retry attempts (`lua/SekonicCalibrator.lua:381–393`).
-
-**Authentication:** None. Local plugin; optional `github_username` in config is a display label only, not an auth token.
+**Logging:** Bridge logs to stdout + `bridge.log`; systemd journal via `sekonic-bridge.service`.
+**Validation:** Plugin clamps CCT/Duv/CRI/R9 to constants; bridge sanity-checks parsed values in discovery/capture paths.
+**Authentication:** None on bridge API; physical access to show network is the security boundary.
 
 ---
 

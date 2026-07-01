@@ -4,158 +4,249 @@
 
 ## Directory Layout
 
-```
-/workspace/                          # Repository root (SekonicCalibrator / Lighttune)
-├── plugin.xml                       # GrandMA3 plugin manifest
+Layout varies by branch. **Current checkout** (`cursor/install-gsd-core-342d`) contains GSD/Cursor tooling only. Product code lives on remote branches documented in `.planning/codebase/_BRANCH-SCOPE.md`.
+
+### Production baseline — `origin/claude/lighttune-main`
+
+```text
+[repo-root]/
+├── plugin.xml                 # MA3 plugin manifest
+├── README.md
+├── .gitignore
 ├── lua/
-│   └── SekonicCalibrator.lua        # Entire plugin runtime (~1,430 lines)
+│   └── SekonicCalibrator.lua  # v0.4 — monolithic plugin (~1431 lines)
 ├── data/
-│   ├── .gitkeep                     # Ensures data/ exists in repo
-│   ├── config.json.example          # Template for operator config
-│   ├── measurements/
-│   │   └── .gitkeep                 # Reserved for future per-session JSON exports
-│   ├── config.json                  # Runtime config (gitignored, not in repo)
-│   └── fixture_log.json             # Append-only fixture DB (gitignored, created at runtime)
-├── test_color_math.lua              # Standalone Lua 5.4 unit tests
-├── README.md                        # User documentation and workflow guide
-├── .gitignore                       # Ignores config.json, fixture_log.json, measurements
-└── .planning/
-    └── codebase/                    # GSD codebase map documents (this folder)
+│   ├── .gitkeep
+│   ├── config.json.example    # github_username only
+│   └── measurements/
+│       └── .gitkeep
+└── test_color_math.lua        # Standalone color-math tests (dev host)
 ```
 
-**Not part of the deployable plugin artifact:** `.cursor/`, `.git/`, `.planning/` — development and planning tooling only.
+### Sekonic experimental — `origin/claude/sekonic-remote-api-research-HdMTl` / `origin/Lighttune-experimental`
+
+```text
+[repo-root]/
+├── plugin.xml
+├── README.md                  # + remote bridge workflow section
+├── lua/
+│   └── SekonicCalibrator.lua  # v0.5 — + bridge client & auto-loop (~2046 lines)
+├── data/
+│   ├── config.json.example    # + bridge_ip, bridge_port
+│   └── measurements/
+├── test_color_math.lua
+└── sekonic-bridge/            # Raspberry Pi sidecar (NOT on lighttune-main)
+    ├── README.md              # Hardware, image build, API docs
+    ├── server.py              # FastAPI REST server (entry point)
+    ├── meter_c7000_hid.py     # USB bulk driver for C-7000
+    ├── meter_mock.py          # Mock meter for --mock / dev
+    ├── discover_device.py     # CLI USB VID/PID scanner
+    ├── requirements.txt       # fastapi, uvicorn, pyusb
+    ├── start.sh               # Manual launcher (real or --mock)
+    ├── setup-pi.sh            # Pi first-boot provisioning
+    ├── build-image.sh         # Pre-built SD image builder
+    ├── sekonic-bridge.service # systemd unit → /opt/sekonic-bridge
+    ├── bridge.log             # Runtime log (created on Pi)
+    ├── device_config.json     # Runtime USB config (created on Pi)
+    └── venv/                  # Created by setup-pi.sh (not in git)
+```
+
+### Current workspace — `cursor/install-gsd-core-342d`
+
+```text
+[repo-root]/
+├── .cursor/                   # GSD agents, skills, hooks, gsd-core
+├── .planning/
+│   └── codebase/              # Codebase map documents (this folder)
+└── .gitignore
+```
 
 ## Directory Purposes
 
 **`lua/`:**
-- Purpose: GrandMA3 ComponentLua source
-- Contains: Single plugin module file
-- Key files: `lua/SekonicCalibrator.lua`
+- Purpose: GrandMA3 plugin source.
+- Contains: Single component file `SekonicCalibrator.lua` organized by numbered sections.
+- Key sections (v0.5): 1 constants, 2 color math, 2b fixture DB JSON, **2c bridge HTTP**, 3 UI, 3b patch capabilities, 4 fixture apply, 5 data paths, 6 main.
 
 **`data/`:**
-- Purpose: Runtime persistence directory shipped with the plugin package
-- Contains: Example config, placeholder dirs, operator-generated JSON at runtime
-- Key files: `data/config.json.example`, `data/fixture_log.json` (created on first calibration)
+- Purpose: Plugin-local persistence shipped with install; operator writes runtime files here.
+- Contains: `config.json` (from example), `fixture_log.json` (append-only DB), optional `measurements/`.
+- Not created at runtime by plugin — must exist in plugin package.
 
-**Repository root:**
-- Purpose: Plugin packaging, manifest, tests, documentation
-- Contains: `plugin.xml`, `test_color_math.lua`, `README.md`
-- Key files: `plugin.xml` (registers component path)
+**`sekonic-bridge/` (Sekonic branches only):**
+- Purpose: Pi-resident HTTP service bridging USB spectrometer to show network.
+- Contains: Python server, meter drivers, deployment scripts, systemd unit.
+- Installed on Pi at `/opt/sekonic-bridge` by `setup-pi.sh`.
+
+**`.planning/codebase/`:**
+- Purpose: GSD codebase intelligence (architecture, stack, concerns).
+- Contains: `ARCHITECTURE.md`, `STRUCTURE.md`, `_BRANCH-SCOPE.md`, etc.
 
 ## Key File Locations
 
 **Entry Points:**
-- `plugin.xml`: GrandMA3 plugin registration — names component and Lua file path
-- `lua/SekonicCalibrator.lua:1431`: `return main` — callable exported to MA3 runtime
-- `test_color_math.lua`: CLI test entry — run with `lua5.4 test_color_math.lua`
+- `plugin.xml`: MA3 plugin registration (`ComponentLua` → `lua/SekonicCalibrator.lua`).
+- `lua/SekonicCalibrator.lua`: `main(display)` at Section 6; `return main` at file end.
+- `sekonic-bridge/server.py`: `main()` + FastAPI `app` (Sekonic branches).
+- `sekonic-bridge/start.sh`: Shell wrapper activating venv then `python3 server.py`.
 
 **Configuration:**
-- `plugin.xml`: Plugin name (`SekonicCalibrator`), author (`Lighttune`), version (`0.1.0` in manifest; code header says v0.4)
-- `data/config.json.example`: Documents optional `github_username` field
-- `data/config.json`: Operator-local config at plugin root sibling path — loaded from `get_plugin_dir()/config.json` (`lua/SekonicCalibrator.lua:1245–1253`), not from `data/config.json`
+- `data/config.json.example`: Template for operator `config.json` beside plugin.
+- `sekonic-bridge/device_config.json`: Pi-side USB discovery state (runtime).
+- `sekonic-bridge/sekonic-bridge.service`: systemd — User `sekonic`, WorkingDirectory `/opt/sekonic-bridge`.
 
 **Core Logic:**
-- `lua/SekonicCalibrator.lua`: All production code, organized by section banners:
-  - §1 Constants (lines ~15–47)
-  - §2 Color math (lines ~49–200)
-  - §2b Fixture database JSON (lines ~202–375)
-  - §3 UI helpers (lines ~377–1047)
-  - §3b Patch capability detection (lines ~1049–1148)
-  - §4 Fixture application (lines ~1150–1185)
-  - §5 Data logging (lines ~1187–1279)
-  - §6 Main entry / orchestration (lines ~1281–1431)
+- Color / correction: `lua/SekonicCalibrator.lua` Section 2, `get_correction()`.
+- Fixture apply: Section 4, `calibrate_group()`.
+- Bridge client: Section 2c, `bridge_fetch_measurement()`, `_http_request()`.
+- USB measure: `sekonic-bridge/meter_c7000_hid.py`, class `C7000HID`.
 
 **Testing:**
-- `test_color_math.lua`: Mirrors §2 and §2b with assert helpers; 126 tests expected per README
+- `test_color_math.lua`: Pure color-math validation off-console.
+- `sekonic-bridge/meter_mock.py`: Hardware-free bridge testing (`server.py --mock`).
 
-**Documentation:**
-- `README.md`: Installation paths, workflow, meter support, DB schema, MA3 constraints
+## SekonicCalibrator.lua Internal Map (v0.5)
+
+| Section | Lines (approx.) | Responsibility |
+|---------|-----------------|----------------|
+| 1 | header–50 | Constants, meter types, quality thresholds |
+| 2 | 52–200 | Color math pure functions |
+| 2b | 205–378 | Fixture DB JSON encode/parse, best flags |
+| 3 | 380–1120 | UI helpers, `get_measurement_params` (bridge + manual) |
+| 2c | 1125–1505 | Bridge HTTP, setup wizard, `goals_met` |
+| 3b | 1507–1655 | `read_capabilities_from_patch` |
+| 4 | 1657–1695 | `calibrate_group`, SetColor |
+| 5 | 1697–1775 | Paths, `load_config`, `save_fixture_log_local` |
+| 6 | 1777–2046 | `main`, menus, auto-loop |
+
+v0.4 omits Section 2c and bridge branches in Section 3/6; `load_config()` is slimmer.
+
+## sekonic-bridge Module Relationships
+
+```text
+server.py
+  ├── lifespan → _load_meter(use_mock)
+  │     ├── meter_mock.MockMeter        (--mock)
+  │     └── meter_c7000_hid.C7000HID    (default)
+  ├── device_config.json ← _load_device_config / _save_device_config
+  └── endpoints
+        GET  /status
+        GET  /discover      → pyusb scan (or mock)
+        POST /capture       → test measure or passive listen
+        POST /learn_trigger → probe_trigger (legacy path)
+        POST /measure       → _meter.measure()
+
+meter_c7000_hid.py
+  └── reads device_config.json for VID/PID overrides (default 0x0A41 / 0x7003)
+
+discover_device.py
+  └── standalone CLI; same USB scan logic as /discover, writes device_config.json
+```
 
 ## Naming Conventions
 
 **Files:**
-- PascalCase for the primary plugin module: `SekonicCalibrator.lua`
-- snake_case for test and data files: `test_color_math.lua`, `fixture_log.json`, `config.json`
-- GrandMA3 manifest: lowercase `plugin.xml`
+- Snake_case for Python (`meter_c7000_hid.py`, `discover_device.py`).
+- PascalCase plugin component in XML (`SekonicCalibrator`).
+- Lowercase hyphenated service name (`sekonic-bridge.service`).
 
-**Functions (Lua):**
-- snake_case throughout: `cct_to_xy`, `get_session_goals`, `read_capabilities_from_patch`
-- `get_*` prefix for UI/data fetchers: `get_number_input`, `get_plugin_dir`
-- `show_*` prefix for display-only dialogs: `show_assessment`, `show_fixture_history`
-- `json_*` prefix for JSON helpers: `json_encode_db_record`, `json_parse_db_array`
+**Lua:**
+- `snake_case` functions and locals (`bridge_fetch_measurement`, `get_correction`).
+- `SCREAMING_SNAKE` for module-level constants (`CCT_MIN`, `GOAL_MAX`).
+- Section banners: `-- SECTION N: TITLE`.
 
-**Constants:**
-- UPPER_SNAKE_CASE for enums and thresholds: `GOAL_MAX`, `MODE_TARGET`, `METER_C700`, `CCT_MIN`
-- Table constants in PascalCase key style: `QUALITY.CRI.excellent`
-
-**Data fields (JSON records):**
-- snake_case keys: `make`, `model`, `kelvin`, `best_cri`, `github_username`
-
-**Directories:**
-- lowercase: `lua/`, `data/`, `measurements/`
-- Deploy folder name on console: `SekonicCalibrator/` (matches plugin name in manifest)
+**Python:**
+- `snake_case` functions; `PascalCase` classes (`C7000HID`, `MockMeter`).
+- Private helpers prefixed `_` (`_load_meter`, `_parse`).
 
 ## Where to Add New Code
 
-**New calibration feature (e.g., additional metric):**
-- Primary code: `lua/SekonicCalibrator.lua` — add constants in §1, math in §2 if pure, UI prompts in §3, wire in §6 loops
-- Tests: Mirror changes in `test_color_math.lua` § inline copies
-- Docs: Update `README.md` feature table and schema section
+**New spectrometer field (e.g. extra metric):**
+- Parse in `sekonic-bridge/meter_c7000_hid.py` `_parse()`.
+- Return from `POST /measure` in `server.py`.
+- Extend `bridge_fetch_measurement` regex parsing and validation in `lua/SekonicCalibrator.lua` Section 2c.
+- Update `get_measurement_params` display and `db_entry` in Section 6.
 
-**New UI dialog or wizard step:**
-- Implementation: `lua/SekonicCalibrator.lua` §3 (new `local function`, call from `get_session_goals` or inner/outer loops in §6)
-- Pattern: Follow existing `MessageBox({ title, message, display_handle=display, buttons={…} })` style
+**New bridge HTTP endpoint:**
+- Add route in `sekonic-bridge/server.py`.
+- Call from new Lua helper in Section 2c using `_http_request`.
+- Document in `sekonic-bridge/README.md`.
 
-**New fixture capability flag:**
-- Implementation: `read_capabilities_from_patch` in §3b — extend `caps` table and DMX attribute scan loop
-- Consumer: `show_assessment` hint logic in §3
+**New fixture capability hint:**
+- Extend `read_capabilities_from_patch()` Section 3b attribute matching.
+- Surface in `show_assessment()` Section 3.
 
-**New persisted field on fixture records:**
-- Schema: Extend `json_encode_db_record`, `json_parse_db_array`, `append_fixture_record` in §2b
-- Write path: `db_entry` construction in §6 (`lua/SekonicCalibrator.lua:1388–1399`)
-- Read path: `show_fixture_history` display columns in §3
+**New calibration UI flow:**
+- Section 3 helpers; wire from Section 6 loops.
+- Preserve manual fallback when `bridge_ip` unset.
 
-**New configuration option:**
-- Example: Add field to `data/config.json.example`
-- Loader: Extend `load_config()` in §5
-- Note: Config file lives at plugin root (`SekonicCalibrator/config.json`), not inside `data/`
+**Plugin-only change (no Pi):**
+- Safe on `lighttune-main` — stay within Sections 2, 3, 4, 5, 6; do not reference Section 2c.
 
-**New standalone test:**
-- Add test cases to `test_color_math.lua` using `assert_near`, `assert_equal`, `assert_true` helpers
-- Do not add MA3 API tests — no console runtime in CI
+**Full remote-meter feature:**
+- Branch from `Lighttune-experimental` or `sekonic-remote-api-research-HdMTl`; touch both `lua/` and `sekonic-bridge/`.
+
+## Branch-Specific Paths
+
+| Path | `lighttune-main` | Sekonic branches |
+|------|------------------|------------------|
+| `lua/SekonicCalibrator.lua` | v0.4 | v0.5 |
+| `sekonic-bridge/` | absent | present |
+| `data/config.json.example` | username only | + bridge fields |
+| `README.md` | manual workflow | + Pi bridge setup |
+
+Read files not in working tree:
+
+```bash
+git show origin/claude/sekonic-remote-api-research-HdMTl:sekonic-bridge/server.py
+git show origin/claude/lighttune-main:lua/SekonicCalibrator.lua
+git diff origin/claude/lighttune-main origin/claude/sekonic-remote-api-research-HdMTl
+```
 
 ## Special Directories
 
 **`data/measurements/`:**
-- Purpose: Placeholder for future per-session measurement exports
-- Generated: Would be runtime-written if feature added
-- Committed: Only `.gitkeep`; `data/measurements/*.json` is gitignored
+- Purpose: Placeholder for future measurement artifacts.
+- Generated: No runtime writes observed in current plugin code.
+- Committed: `.gitkeep` only.
 
-**`data/` (runtime files):**
-- Purpose: Fixture database and optional future measurement storage
-- Generated: `fixture_log.json` created on first successful group log
-- Committed: Structure and example only; actual logs excluded via `.gitignore`
+**`sekonic-bridge/venv/`:**
+- Purpose: Python virtualenv on Pi.
+- Generated: Yes, by `setup-pi.sh`.
+- Committed: No.
 
-**`.planning/codebase/`:**
-- Purpose: GSD-generated architecture and codebase intelligence documents
-- Generated: By `/gsd-map-codebase` workflow
-- Committed: Yes (planning artifacts for agents)
+**`.cursor/`:**
+- Purpose: GSD workflow tooling (agents, skills, hooks).
+- Generated: Installed by GSD bootstrap.
+- Committed: On `cursor/install-gsd-core-342d` branch.
 
-## Deploy Layout on GrandMA3 Console
+**`.planning/`:**
+- Purpose: Project planning and codebase maps.
+- Committed: Partially (codebase docs on tooling branch).
 
-When installed, the repository folder maps directly to the plugin library path:
+## Runtime Layout on GrandMA3 Console
 
+Plugin installs under MA3 plugin library (OS-dependent), e.g.:
+
+- Linux: `$HOME/MALightingTechnology/gma3_library/datapools/plugins/SekonicCalibrator/`
+- Windows: `%APPDATA%/MALightingTechnology/gma3_library/datapools/plugins/SekonicCalibrator/`
+
+Resolved by `get_plugin_dir()` in Section 5. Operator places `config.json` in that folder (same level as `data/`).
+
+## Runtime Layout on Raspberry Pi
+
+After `setup-pi.sh`:
+
+```text
+/opt/sekonic-bridge/
+├── server.py
+├── meter_*.py
+├── venv/
+├── device_config.json    # created by /discover or discover_device.py
+└── bridge.log
 ```
-gma3_library/datapools/plugins/SekonicCalibrator/
-├── plugin.xml
-├── lua/SekonicCalibrator.lua
-├── data/
-│   ├── config.json          # optional, operator-created
-│   └── fixture_log.json     # created at runtime
-└── config.json              # optional contributor name (plugin root, not in data/)
-```
 
-Path resolution at runtime: `GetPath(Enums.PathType.PluginLibrary) .. sep .. "SekonicCalibrator"` (`lua/SekonicCalibrator.lua:1211–1217`).
+Service: `systemctl enable --now sekonic-bridge` (see `sekonic-bridge.service`).
 
 ---
 
