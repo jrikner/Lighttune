@@ -51,8 +51,9 @@ Progress: [░░░░░░░░░░] 0%
 Decisions are logged in PROJECT.md Key Decisions table.
 Recent decisions affecting current work:
 
-- Replan: clean architecture + Pi bridge v1 topology (not native Sekonic HTTP)
-- Phase order: canonical merge → domain modules → CI → bridge → HTTP integration → UX/docs → UAT
+- Replan: **single plugin + thin Pi/Arduino HTTP bridge** (not multi-module plugin split)
+- Phase 1: **cherry-pick** merge, not wholesale branch merge
+- Phase order: cherry-pick → plugin hardening → CI → thin bridge → HTTP integration → UX/docs → UAT
 
 ### Pending Todos
 

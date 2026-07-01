@@ -7,7 +7,7 @@
 
 ### Canonical baseline & docs
 
-- [ ] **BASE-01**: Single canonical source tree merges validated v0.4 plugin behavior with experimental sekonic-bridge (reconciled research vs experimental branches)
+- [ ] **BASE-01**: Cherry-pick proven commits from experimental branches onto main (document manifest; not wholesale branch merge)
 - [ ] **BASE-02**: README, `plugin.xml`, version strings, and `config.json.example` match implementation (no false community-upload or disk-GDTF claims)
 - [ ] **BASE-03**: `config.json` path documented and consistent between README and plugin code
 
@@ -17,7 +17,7 @@
 - [ ] **ARCH-02**: Fixture database logic extracted to module with hardened JSON parse/encode (not regex-only)
 - [ ] **ARCH-03**: Goals and quality assessment logic isolated from UI and transport layers
 - [ ] **ARCH-04**: Bridge HTTP client extracted to `bridge_client.lua` with explicit timeouts and error types
-- [ ] **ARCH-05**: Plugin entry point (`main.lua`) orchestrates modules; no monolithic 2k-line single file
+- [ ] **ARCH-05**: Plugin ships as **one deployable MA3 plugin**; calibration logic stays on-console (Pi is transport-only)
 
 ### Calibration workflow (table stakes)
 

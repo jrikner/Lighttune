@@ -2,7 +2,7 @@
 
 ## Overview
 
-Brownfield replan of GrandMA3 spectrometer calibration: merge experimental branches into one canonical tree, modularize the Lua plugin and Pi bridge, gate quality with shared host/CI tests, wire HTTP remote measure from FOH, polish operator UX and docs, then validate on real console hardware. Seven horizontal layers deliver infrastructure before integration and UAT.
+Brownfield replan: cherry-pick proven commits onto main, keep **one GrandMA3 plugin** with all calibration logic, and a **thin Pi/Arduino HTTP bridge** (USB meter I/O only). Shared tests and CI gate quality; remote measure from FOH; UAT on real hardware.
 
 ## Phases
 
@@ -11,9 +11,9 @@ Brownfield replan of GrandMA3 spectrometer calibration: merge experimental branc
 - Decimal phases (e.g. 2.1): Urgent insertions (marked with INSERTED)
 
 - [ ] **Phase 1: Canonical Merge & Baseline** - Single truthful source tree with aligned docs, version, and config paths
-- [ ] **Phase 2: Clean Architecture — Domain Modules** - Extract testable color math, fixture DB, and goals from monolith
+- [ ] **Phase 2: Plugin Hardening & Test Seams** - Single-plugin layout; extract only what host tests require; hardened JSON in-plugin
 - [ ] **Phase 3: Shared Test Strategy & CI** - Host Lua tests, bridge pytest, golden fixtures, GitHub workflow
-- [ ] **Phase 4: Pi Bridge Production** - Production FastAPI bridge with C-7000 bulk driver and mock dev path
+- [ ] **Phase 4: Thin Bridge (Pi/Arduino)** - Minimal HTTP server: USB read, raw JSON return, mock for dev — no calibration logic on device
 - [ ] **Phase 5: MA3 ↔ HTTP Integration** - bridge_client, remote measure, setup wizard, auto-loop
 - [ ] **Phase 6: Operator UX, Docs & Show Readiness** - v0.4 workflow modularized, patch UX, runbooks
 - [ ] **Phase 7: Console UAT & Hardware Validation** - Real MA3 + Pi + C-7000 end-to-end sign-off
@@ -21,27 +21,28 @@ Brownfield replan of GrandMA3 spectrometer calibration: merge experimental branc
 ## Phase Details
 
 ### Phase 1: Canonical Merge & Baseline
-**Goal**: One canonical branch snapshot merges validated v0.4 plugin behavior with experimental sekonic-bridge; docs and manifests match reality.
+**Goal**: Cherry-pick proven commits from experimental/research branches onto main; docs and manifests match reality.
 **Depends on**: Nothing (first phase)
 **Requirements**: BASE-01, BASE-02, BASE-03
 **Success Criteria** (what must be TRUE):
-  1. Developer can work from a single tree containing v0.4 plugin behavior and the sekonic-bridge folder (research bulk driver reconciled with experimental integration)
-  2. README, `plugin.xml`, version strings, and `config.json.example` describe only what the code actually does (no false community-upload or disk-GDTF claims)
-  3. `config.json` load path is documented in README and matches the path used by plugin code
+  1. Developer works from main with v0.4 plugin behavior plus cherry-picked bridge + v0.5 HTTP client commits (not a wholesale merge of one conflicting branch)
+  2. Cherry-pick manifest documents which commits came from `sekonic-remote-api-research` vs `Lighttune-experimental` and why
+  3. README, `plugin.xml`, version strings, and `config.json.example` describe only what the code actually does (no false community-upload or disk-GDTF claims)
+  4. `config.json` load path is documented in README and matches the path used by plugin code
 **Plans**: TBD
 
-### Phase 2: Clean Architecture — Domain Modules
-**Goal**: Domain logic lives in require-able Lua modules so color math, persistence, and goals can be tested without the monolith.
+### Phase 2: Plugin Hardening & Test Seams
+**Goal**: One MA3 plugin owns calibration intelligence; extract only the minimum needed for host testing (color math duplication eliminated).
 **Depends on**: Phase 1
 **Requirements**: ARCH-01, ARCH-02, ARCH-03, ARCH-05, DB-01
 **Success Criteria** (what must be TRUE):
-  1. Color math runs from `color_math.lua` and is importable by both plugin and host test runner (no duplicated inline math)
-  2. Fixture database read/write uses hardened JSON parse/encode with append-only `fixture_log.json` and best-value flags
-  3. Goals and quality assessment (`goals_met`, rating bands) are callable without UI or HTTP transport
-  4. `main.lua` orchestrates modules; no single 2k-line monolithic source file remains as the entry point
+  1. Plugin remains a **single deployable artifact** (`plugin.xml` → primary Lua entry); no multi-file plugin split unless MA3 `require` is verified necessary
+  2. Color math is testable without duplicating logic in `test_color_math.lua` (shared module or verified single source)
+  3. Fixture database uses hardened JSON parse/encode inside the plugin with append-only `fixture_log.json` and best-value flags
+  4. Goals, assessment, HTTP client, and session orchestration live in the plugin — not on the bridge
 **Plans**: TBD
 
-**Research flag**: Verify MA3 multi-file `require` / `package.path` on target DataVersion 1.6.1.3 before locking module layout.
+**Research flag**: Only split Lua files if host tests cannot run against a single plugin source; prefer one plugin.
 
 ### Phase 3: Shared Test Strategy & CI
 **Goal**: Regressions are caught once on shared modules and bridge routes before feature velocity resumes.
@@ -54,14 +55,15 @@ Brownfield replan of GrandMA3 spectrometer calibration: merge experimental branc
   4. CI workflow on push runs host Lua tests and bridge pytest and reports pass/fail
 **Plans**: TBD
 
-### Phase 4: Pi Bridge Production
-**Goal**: Stage-side bridge is production-ready: correct USB bulk C-7000 driver, discover/measure API, and mock dev path.
-**Depends on**: Phase 1 (may parallelize with Phases 2–3 after canonical tree exists)
+### Phase 4: Thin Bridge (Pi/Arduino)
+**Goal**: Stage device is transport-only: USB Sekonic read, HTTP JSON response, health status — no calibration or wizard logic on Pi.
+**Depends on**: Phase 1 (may parallelize with Phases 2–3 after cherry-picks land)
 **Requirements**: MTR-01, MTR-02, MTR-07
 **Success Criteria** (what must be TRUE):
-  1. Pi bridge serves `/status`, `/measure`, and `/discover` on show LAN (default port 8765)
-  2. C-7000 is read via USB bulk protocol (skreader-derived); HID misnomer removed from driver naming and setup flow
-  3. `--mock` / MockMeter mode returns realistic improving readings for rehearsal without hardware
+  1. Bridge exposes only `/status`, `/measure`, and minimal `/discover` (USB present) on show LAN (default port 8765)
+  2. C-7000 read via USB bulk; returns raw `{ cct, duv, cri, r9, tlci? }` — no color math, goals, or SetColor on device
+  3. Bridge codebase is minimal (target: strip HID wizard, trigger-learn, and duplicate business logic from experimental `server.py`)
+  4. Mock mode returns realistic readings for dev without hardware
 **Plans**: TBD
 
 ### Phase 5: MA3 ↔ HTTP Integration
@@ -72,7 +74,7 @@ Brownfield replan of GrandMA3 spectrometer calibration: merge experimental branc
   1. Plugin calls bridge over LuaSocket HTTP/1.0 with explicit timeouts and parses MeasurementRecord JSON into session state
   2. On bridge failure, operator can retry remote measure, enter values manually, or cancel without losing the session
   3. After successful remote measure, auto-loop runs up to 3 apply/measure cycles using `goals_met()` with operator exit at any point
-  4. Bridge Status and setup wizard (discover + test measure) are reachable from the plugin main menu
+  4. Bridge Status and setup wizard (discover + test measure) are reachable from the plugin main menu — **all setup UX on console**, not on Pi
 **Plans**: TBD
 
 **UI hint**: yes
