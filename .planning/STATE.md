@@ -83,5 +83,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-07-01T23:34:50.593Z
-Stopped at: Phase 1 context gathered
-Resume file: .planning/phases/01-canonical-merge-baseline/01-CONTEXT.md
+Stopped at: Phase 1 execution complete; ready for `/gsd-discuss-phase 2` or `/gsd-plan-phase 2`
+Resume file: .planning/phases/01-canonical-merge-baseline/01-03-SUMMARY.md
