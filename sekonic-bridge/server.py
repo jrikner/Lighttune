@@ -161,7 +161,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Sekonic C-7000 Bridge",
     description="Remote measurement bridge for Lighttune SekonicCalibrator",
-    version="1.0.0",
+    version="0.5.0-replan",
     lifespan=lifespan,
 )
 
@@ -176,7 +176,7 @@ async def status():
         "connected":          connected,
         "uptime_s":           int(time.time() - _start_time),
         "last_error":         _last_error,
-        "version":            "1.0.0",
+        "version":            "0.5.0-replan",
         "device_configured":  _is_device_configured()  or _use_mock_global,
         "protocol_captured":  _is_protocol_captured()  or _use_mock_global,
         "trigger_discovered": _is_trigger_discovered() or _use_mock_global,

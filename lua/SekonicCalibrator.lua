@@ -1,4 +1,4 @@
--- SekonicCalibrator v0.5
+-- SekonicCalibrator v0.5.0-replan
 -- Lighttune - GrandMA3 Lua Plugin
 --
 -- Calibrate fixture groups using Sekonic spectromaster measurements.

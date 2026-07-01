@@ -1,4 +1,6 @@
 {
+  "_comment": "Copy this file to config.json at the plugin root (same folder as plugin.xml), NOT inside data/.",
+
   "github_username":   "your_github_username",
 
   "bridge_ip":         "192.168.1.50",

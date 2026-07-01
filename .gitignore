@@ -1,6 +1,6 @@
-# Never commit real tokens
-data/config.json
+# Never commit operator config (plugin root, same folder as plugin.xml)
+config.json
 
-# Local measurement logs (uploaded separately)
+# Local measurement logs
 data/fixture_log.json
 data/measurements/*.json
