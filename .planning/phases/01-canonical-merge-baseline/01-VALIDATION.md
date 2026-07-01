@@ -38,10 +38,10 @@ created: 2026-07-01
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| 01-01 | 01 | 1 | BASE-01 | — | N/A | git | cherry-pick applies cleanly | ✅ | ⬜ pending |
-| 01-02 | 02 | 2 | BASE-02 | T-1-01 | No secrets in git | grep | `! grep -q community_upload README.md` | ✅ | ⬜ pending |
-| 01-03 | 02 | 2 | BASE-03 | — | config.json gitignored at root | grep | `grep config.json .gitignore` | ✅ | ⬜ pending |
-| 01-04 | 03 | 3 | BASE-01 | — | Color math preserved | unit | `lua5.4 test_color_math.lua` | ✅ | ⬜ pending |
+| 01-01 | 01 | 1 | BASE-01 | — | N/A | git | cherry-pick applies cleanly | ✅ | ✅ green |
+| 01-02 | 02 | 2 | BASE-02 | T-1-01 | No secrets in git | grep | `! grep -q community_upload README.md` | ✅ | ✅ green |
+| 01-03 | 02 | 2 | BASE-03 | — | config.json gitignored at root | grep | `grep config.json .gitignore` | ✅ | ✅ green |
+| 01-04 | 03 | 3 | BASE-01 | — | Color math preserved | unit | `lua5.4 test_color_math.lua` | ✅ | ✅ green |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 

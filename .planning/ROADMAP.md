@@ -38,15 +38,15 @@ Brownfield replan: cherry-pick proven commits onto main, keep **one GrandMA3 plu
 Plans:
 **Wave 1**
 
-- [ ] 01-01-PLAN.md — Cherry-pick six research commits onto main + manifest (BASE-01)
+- [x] 01-01-PLAN.md — Cherry-pick six research commits onto main + manifest (BASE-01)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 01-02-PLAN.md — v0.5.0-replan version alignment + README honesty + config path (BASE-02, BASE-03)
+- [x] 01-02-PLAN.md — v0.5.0-replan version alignment + README honesty + config path (BASE-02, BASE-03)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 01-03-PLAN.md — Verification gate: lua tests, grep audits, tree parity (BASE-01/02/03)
+- [x] 01-03-PLAN.md — Verification gate: lua tests, grep audits, tree parity (BASE-01/02/03)
 
 ### Phase 2: Plugin Hardening & Test Seams
 
