@@ -534,16 +534,13 @@ Phase 1 lands unauthenticated HTTP bridge from research branch — no new auth. 
 | A2 | `_comment` key in config example is harmless to regex parser | Code Examples | Remove if parser breaks |
 | A3 | `-X theirs` during cherry-pick equals D-03 “research branch wins” | Cherry-pick Procedure | Use explicit `checkout --theirs` if policy disputed |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **plugin.xml semver suffix**
-   - What we know: D-08 wants `0.5.0-replan`; discretion allows `0.5.0` only in XML
-   - What's unclear: MA3 parser behavior for non-semver Version strings
-   - Recommendation: Try `0.5.0-replan`; fallback `0.5.0` with replan in Lua/README only
+1. **plugin.xml semver suffix** — RESOLVED for planning
+   - Decision: Try `Version="0.5.0-replan"` in plugin.xml per D-08; if MA3 rejects non-semver, fallback to `0.5.0` in XML only with `v0.5.0-replan` in Lua header and README (Claude's discretion in CONTEXT.md).
 
-2. **Bridge `/status` version string**
-   - What we know: Currently `"1.0.0"` independent of plugin version
-   - Recommendation: Use `"0.5.0-replan"` or `"1.0.0-replan"` consistently; document in manifest
+2. **Bridge `/status` version string** — RESOLVED for planning
+   - Decision: Align bridge `/status` JSON `version` to `"0.5.0-replan"` in Wave 2 plan 01-02; document choice in cherry-pick manifest.
 
 ## Sources
 
