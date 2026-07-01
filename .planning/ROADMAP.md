@@ -29,7 +29,12 @@ Brownfield replan: cherry-pick proven commits onto main, keep **one GrandMA3 plu
   2. Cherry-pick manifest documents which commits came from `sekonic-remote-api-research` vs `Lighttune-experimental` and why
   3. README, `plugin.xml`, version strings, and `config.json.example` describe only what the code actually does (no false community-upload or disk-GDTF claims)
   4. `config.json` load path is documented in README and matches the path used by plugin code
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+- [ ] 01-01-PLAN.md — Cherry-pick six research commits onto main + manifest (BASE-01)
+- [ ] 01-02-PLAN.md — v0.5.0-replan version alignment + README honesty + config path (BASE-02, BASE-03)
+- [ ] 01-03-PLAN.md — Verification gate: lua tests, grep audits, tree parity (BASE-01/02/03)
 
 ### Phase 2: Plugin Hardening & Test Seams
 **Goal**: One MA3 plugin owns calibration intelligence; extract only the minimum needed for host testing (color math duplication eliminated).
@@ -114,7 +119,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 (Phase 4 
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Canonical Merge & Baseline | 0/TBD | Not started | - |
+| 1. Canonical Merge & Baseline | 0/3 | Not started | - |
 | 2. Clean Architecture — Domain Modules | 0/TBD | Not started | - |
 | 3. Shared Test Strategy & CI | 0/TBD | Not started | - |
 | 4. Pi Bridge Production | 0/TBD | Not started | - |
