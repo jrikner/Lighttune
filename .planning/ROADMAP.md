@@ -193,7 +193,20 @@ Plans:
   5. Patch-derived make/model, feature hints (Tint, CTB, CTO, ColorWheel), gel hints, and quality assessment screen match v0.4 broadcast rating behavior
   6. **Secondary** Pi stage runbook (VLAN, firewall, troubleshooting) documented for FOH/stage-split installs
 
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+**Wave 1**
+
+- [ ] 06-01-PLAN.md — macOS onPC runbook + config.lua + config.json.example fix (TOP-01, UX-05, D-105)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 06-02-PLAN.md — goals shadowing fix + patch_api.lua + fixture_apply.lua (UX-01/02, CAL-04, D-106)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 06-03-PLAN.md — ui/* + calibration.lua + thin shell + bridge_client merge + validation (CAL-01–03/05–06, DB-02/03, UX-03/04, D-107–D-121)
 
 **UI hint**: yes
 
@@ -229,7 +242,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 (Phase 4 
 | 3. Shared Test Strategy & CI | 3/3 | Complete    | 2026-07-02 |
 | 4. Pi Bridge Production | 3/3 | Complete   | 2026-07-02 |
 | 5. MA3 ↔ HTTP Integration | 3/3 | Complete   | 2026-07-02 |
-| 6. Operator UX, Docs & Show Readiness | 0/TBD | Not started | - |
+| 6. Operator UX, Docs & Show Readiness | 0/3 | Planned | - |
 | 7. Console UAT & Hardware Validation | 0/TBD | Not started | - |
 
 ---

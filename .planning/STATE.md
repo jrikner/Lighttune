@@ -4,15 +4,15 @@ milestone: v0.4
 milestone_name: milestone
 current_phase: 6
 current_phase_name: Operator UX, Docs & Show Readiness
-status: ready_to_plan
-stopped_at: Phase 6 planning — macOS TOP-01 priority
-last_updated: "2026-07-02T23:30:00.000Z"
+status: ready_to_execute
+stopped_at: Phase 6 execution — Wave 1 macOS runbook + config.lua
+last_updated: "2026-07-02T23:45:00.000Z"
 last_activity: 2026-07-02
-last_activity_desc: TOP-01 macOS local bridge elevated to primary topology on roadmap
+last_activity_desc: Phase 6 planned — 3 plans (macOS docs, patch/apply, ui modularization)
 progress:
   total_phases: 7
   completed_phases: 5
-  total_plans: 15
+  total_plans: 18
   completed_plans: 15
   percent: 71
 ---
@@ -27,9 +27,9 @@ progress:
 ## Current Position
 
 Phase: 6 of 7 (Operator UX, Docs & Show Readiness)
-Plan: 0 (not yet planned)
-Status: Ready to plan (`/gsd-plan-phase 6`)
-Last activity: 2026-07-02 — Topology decision: macOS local bridge primary (TOP-01)
+Plan: 0 of 3 planned
+Status: Ready to execute (`/gsd-execute-phase 6`)
+Last activity: 2026-07-02 — Phase 6 planned (TOP-01 macOS runbook Wave 1)
 
 Progress: [█████████░] 71%
 
@@ -50,4 +50,4 @@ Progress: [█████████░] 71%
 
 ## Session Continuity
 
-Resume file: `/gsd-plan-phase 6`
+Resume file: `/gsd-execute-phase 6`
