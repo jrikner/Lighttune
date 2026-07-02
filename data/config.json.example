@@ -3,6 +3,11 @@
 
   "github_username":   "your_github_username",
 
-  "bridge_ip":         "192.168.1.50",
-  "bridge_port":       8765
+  "bridge_ip":         "127.0.0.1",
+  "_comment_bridge_ip_mac": "PRIMARY (macOS onPC): use 127.0.0.1 when sekonic-bridge runs on the same Mac as onPC with C-7000 USB",
+  "_comment_bridge_ip_pi": "SECONDARY (stage split): e.g. 192.168.1.50 when console and meter are on different machines",
+  "bridge_port":       8765,
+
+  "_comment_bridge_api_key": "Optional shared secret when the bridge has BRIDGE_API_KEY or bridge_api_key configured",
+  "bridge_api_key":    ""
 }

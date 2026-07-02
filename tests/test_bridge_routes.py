@@ -15,6 +15,7 @@ def test_status_mock(client, golden_status):
     assert data["device_configured"] is golden_status["device_configured"]
     assert data["protocol_captured"] is golden_status["protocol_captured"]
     assert data["trigger_discovered"] is golden_status["trigger_discovered"]
+    assert data["auth_required"] is golden_status["auth_required"]
     assert isinstance(data["uptime_s"], int)
     assert data["uptime_s"] >= 0
     assert data["last_error"] is None or isinstance(data["last_error"], str)

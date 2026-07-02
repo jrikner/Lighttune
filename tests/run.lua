@@ -10,10 +10,12 @@ M.reset()
 local run_color_math = require("test_color_math")
 local run_fixture_db = require("test_fixture_db")
 local run_goals = require("test_goals")
+local run_bridge_client = require("test_bridge_client")
 
 run_color_math(M)
 run_fixture_db(M)
 run_goals(M)
+run_bridge_client(M)
 
 local PASS, FAIL = M.get_counts()
 

@@ -49,7 +49,7 @@ fi
 info "Creating install directory: $INSTALL_DIR"
 mkdir -p "$INSTALL_DIR"
 
-for f in server.py meter_c7000_hid.py meter_mock.py requirements.txt; do
+for f in server.py meter_c7000_bulk.py meter_mock.py requirements.txt; do
     info "Downloading $f…"
     curl -fsSL "$REPO_URL/$f" -o "$INSTALL_DIR/$f"
 done

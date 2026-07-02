@@ -1,0 +1,4 @@
+{
+  "_comment": "Optional bridge server configuration. Copy to bridge_config.json beside server.py.",
+  "bridge_api_key": ""
+}

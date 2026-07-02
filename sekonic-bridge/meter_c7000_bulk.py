@@ -66,7 +66,7 @@ _OFF_R9  = 393   # R9 = R1-array[8], offset = 353 + 8 × 5
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class C7000HID:
+class C7000Bulk:
     """USB bulk driver for the Sekonic C-7000 (and compatible C-700/C-800)."""
 
     def __init__(self):

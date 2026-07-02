@@ -1,10 +1,28 @@
 # Sekonic Bridge — Remote Measurement Server
 
-Lighttune add-on that connects a **Sekonic C-7000 Spectromaster** to the show network so the GrandMA3 console can trigger measurements and read values automatically — without the operator leaving FOH.
+Lighttune add-on that connects a **Sekonic C-7000 Spectromaster** to GrandMA3 so the plugin can trigger measurements and read values automatically.
+
+## Primary setup — macOS + onPC (recommended)
+
+When **GrandMA3 onPC and the C-7000 share one Mac**, you do **not** need a Raspberry Pi. Run this bridge on the same machine and point the plugin at localhost:
+
+```
+[C-7000] ──USB──► [Mac: sekonic-bridge :8765]
+                        ▲ HTTP 127.0.0.1
+                        │
+              [GrandMA3 onPC — same Mac]
+```
+
+1. Install Python deps and run `sekonic-bridge` on the Mac (see Setup below).
+2. Plug the C-7000 into the Mac via USB.
+3. In plugin `config.json`: `"bridge_ip": "127.0.0.1"`, `"bridge_port": 8765`.
+4. Main menu → **Bridge Status** to confirm connection.
+
+Use the Pi path below only when the console and meter are on **different** machines (FOH console, meter on stage).
 
 ---
 
-## How It Works
+## How It Works (stage-split — optional Pi)
 
 ```
 [Sekonic C-7000]
@@ -150,11 +168,12 @@ Example `config.json`:
   "github_username": "your_username",
   "community_upload": false,
   "bridge_ip":       "192.168.1.50",
-  "bridge_port":     8765
+  "bridge_port":     8765,
+  "bridge_api_key":  ""
 }
 ```
 
-> `bridge_ip` and `bridge_port` are the only fields needed to enable remote measurement. The GitHub fields are optional.
+> `bridge_ip` and `bridge_port` are the only fields needed to enable remote measurement. Set `bridge_api_key` when the Pi bridge requires authentication (see below). The GitHub fields are optional.
 
 ---
 
@@ -190,7 +209,8 @@ Expected status response:
   "version": "1.0.0",
   "device_configured": true,
   "protocol_captured": true,
-  "trigger_discovered": true
+  "trigger_discovered": true,
+  "auth_required": false
 }
 ```
 
@@ -367,8 +387,35 @@ The mock server returns realistic randomised values and responds as if a real me
 
 ---
 
+## Optional API Key Authentication
+
+When the bridge is exposed on a show LAN, you can require a shared secret on every request.
+
+**Configure on the Pi** (either method):
+
+```bash
+# Environment variable (systemd drop-in or export before start)
+export BRIDGE_API_KEY="your-secret-here"
+```
+
+Or copy `bridge_config.json.example` to `bridge_config.json`:
+
+```json
+{
+  "bridge_api_key": "your-secret-here"
+}
+```
+
+**Configure in GrandMA3** — add matching `bridge_api_key` to `config.json`. The plugin sends `X-Bridge-Key` on every HTTP call (setup wizard and measurements).
+
+When no key is configured, all routes behave as before (open LAN). When a key is set, missing or wrong headers return HTTP 401 on `/status`, `/measure`, `/discover`, `/capture`, and `/learn_trigger`.
+
+---
+
 ## Architecture Notes
 
+- **Thin bridge:** The Pi server is transport-only — raw meter fields (CCT, Duv, CRI, R9) over JSON. No calibration logic, color math, or fixture control runs on the Pi.
+- **USB bulk driver:** `meter_c7000_bulk.py` implements the skreader bulk protocol (not HID). `meter_mock.py` provides development mode.
 - The bridge server runs as a `systemd` service under a dedicated unprivileged `sekonic` user
 - USB access is granted via a udev rule — no `sudo` required at runtime
 - The `/measure` endpoint blocks until the meter responds (up to 35 s) — this is intentional; it keeps the Lua plugin simple (one `socket.http` call)
