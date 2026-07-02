@@ -30,7 +30,7 @@ Use the Pi path below only when the console and meter are on **different** machi
       ▼
 [Raspberry Pi Zero 2W]  ──── WiFi / Ethernet ────►  [GrandMA3 Console @ FOH]
   Python HTTP server                                    SekonicCalibrator plugin
-  port 8765                                             calls /measure via socket.http
+  port 8765                                             calls /measure via HTTP/1.0 (LuaSocket TCP)
                                                                │
                                                      [iPhone / Tablet]
                                                      Operator uses GrandMA3
@@ -149,31 +149,29 @@ ssh pi@sekonic-bridge.local
 
 ## Configuring GrandMA3
 
-Add the bridge IP to `config.json` in the SekonicCalibrator data folder:
+Add the bridge address to **`config.json` at the plugin root** (same folder as `plugin.xml`, **not** inside `data/`):
 
 **Windows path:**
 ```
-%APPDATA%\MALightingTechnology\gma3_library\datapools\plugins\SekonicCalibrator\data\config.json
+%APPDATA%\MALightingTechnology\gma3_library\datapools\plugins\SekonicCalibrator\config.json
 ```
 
 **Linux/macOS path:**
 ```
-~/MALightingTechnology/gma3_library/datapools/plugins/SekonicCalibrator/data/config.json
+~/MALightingTechnology/gma3_library/datapools/plugins/SekonicCalibrator/config.json
 ```
 
 Example `config.json`:
 ```json
 {
-  "github_token":    "ghp_...",
   "github_username": "your_username",
-  "community_upload": false,
-  "bridge_ip":       "192.168.1.50",
+  "bridge_ip":       "127.0.0.1",
   "bridge_port":     8765,
   "bridge_api_key":  ""
 }
 ```
 
-> `bridge_ip` and `bridge_port` are the only fields needed to enable remote measurement. Set `bridge_api_key` when the Pi bridge requires authentication (see below). The GitHub fields are optional.
+> **macOS onPC:** use `"bridge_ip": "127.0.0.1"` when the bridge runs on the same Mac. **Stage-split:** use the Pi's LAN IP. Set `bridge_api_key` when the bridge requires authentication.
 
 ---
 
@@ -418,6 +416,6 @@ When no key is configured, all routes behave as before (open LAN). When a key is
 - **USB bulk driver:** `meter_c7000_bulk.py` implements the skreader bulk protocol (not HID). `meter_mock.py` provides development mode.
 - The bridge server runs as a `systemd` service under a dedicated unprivileged `sekonic` user
 - USB access is granted via a udev rule — no `sudo` required at runtime
-- The `/measure` endpoint blocks until the meter responds (up to 35 s) — this is intentional; it keeps the Lua plugin simple (one `socket.http` call)
+- The `/measure` endpoint blocks until the meter responds (up to 35 s) — this is intentional; it keeps the Lua plugin simple (one LuaSocket TCP HTTP/1.0 request)
 - Concurrent measurement requests are rejected with HTTP 409 to prevent race conditions
 - All measurements are logged to `bridge.log` in the install directory
