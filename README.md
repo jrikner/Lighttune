@@ -344,6 +344,18 @@ lua5.4 test_color_math.lua
 
 Expected: **133+ passed, 0 failed** (ROADMAP minimum: 126+).
 
+### Bridge route tests (mock meter, no USB)
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r sekonic-bridge/requirements.txt -r sekonic-bridge/requirements-dev.txt
+.venv/bin/pytest tests/test_bridge_routes.py -v
+```
+
+### Continuous integration
+
+GitHub Actions workflow [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs both suites on push and pull request to `claude/lighttune-main` and `cursor/**` branches. No console, Pi hardware, or USB devices are required in CI.
+
 ---
 
 ## License
