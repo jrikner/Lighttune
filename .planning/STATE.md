@@ -2,19 +2,19 @@
 gsd_state_version: 1.0
 milestone: v0.4
 milestone_name: milestone
-current_phase: 5
-current_phase_name: MA3 ↔ HTTP Integration
-status: ready_to_execute
-stopped_at: Phase 5 planned
-last_updated: "2026-07-02T21:00:00.000Z"
+current_phase: 6
+current_phase_name: Operator UX, Docs & Show Readiness
+status: ready_to_plan
+stopped_at: Phase 5 executed — human UAT pending
+last_updated: "2026-07-02T22:00:00.000Z"
 last_activity: 2026-07-02
-last_activity_desc: Phase 5 planned via /gsd-plan-phase 5 (3 plans, 3 waves)
+last_activity_desc: Phase 5 executed via /gsd-execute-phase 5 (3 plans, merged to claude/lighttune-main)
 progress:
   total_phases: 7
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 15
-  completed_plans: 12
-  percent: 57
+  completed_plans: 15
+  percent: 71
 ---
 
 # Project State
@@ -22,26 +22,24 @@ progress:
 ## Project Reference
 
 **Core value:** FOH calibration in under five minutes with broadcast-grade targets.
-**Current focus:** Phase 5 — MA3 ↔ HTTP Integration
+**Current focus:** Phase 6 — Operator UX, Docs & Show Readiness
 
 ## Current Position
 
-Phase: 5 of 7 (MA3 ↔ HTTP Integration)
-Plan: 0 of 3 (05-01 next)
-Status: Ready to execute (`/gsd-execute-phase 5`)
-Last activity: 2026-07-02 — Phase 5 planned (RESEARCH + 3 PLAN files)
+Phase: 6 of 7 (Operator UX, Docs & Show Readiness)
+Plan: 0 (not yet planned)
+Status: Ready to plan (`/gsd-plan-phase 6`)
+Last activity: 2026-07-02 — Phase 5 executed (bridge_client, 161 lua PASS, pytest 9 passed)
 
-Progress: [████████░░] 57%
+Progress: [█████████░] 71%
 
-## Phase 5 locked decisions (summary)
+## Phase 5 execution summary
 
-- Extract `lua/bridge_client.lua` with structured errors; UI stays in monolith
-- Keep Retry / Manual / Cancel; enrich HTTP error mapping (MTR-04)
-- Auto-loop: 3 attempts, per-cycle confirm, stuck dialog unchanged (MTR-05)
-- Remote offer: `bridge_ip` + C-7000 session meter only (MTR-03)
-- Bridge Status enhanced (auth_required, last_error); setup wizard preserved (MTR-06, D-75)
-- Add `tests/test_bridge_client.lua` to host runner (D-99)
+- `lua/bridge_client.lua` extracted (ARCH-04); monolith delegates all HTTP
+- C-7000 remote gate, enriched errors, Bridge Status auth/last_error (MTR-03/04/06)
+- Auto-loop verified unchanged (MTR-05); `tests/test_bridge_client.lua` added (161 PASS)
+- Human MA3 UAT pending: `/gsd-verify-work 5`
 
 ## Session Continuity
 
-Resume file: `.planning/phases/05-ma3-http-integration/05-01-PLAN.md`
+Resume file: `/gsd-plan-phase 6`

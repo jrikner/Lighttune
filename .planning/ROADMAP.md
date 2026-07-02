@@ -15,7 +15,7 @@ Brownfield replan: cherry-pick proven commits onto main, keep **one GrandMA3 plu
 - [ ] **Phase 2: Plugin Hardening & Test Seams** - Single-plugin layout; extract only what host tests require; hardened JSON in-plugin
 - [x] **Phase 3: Shared Test Strategy & CI** - Host Lua tests, bridge pytest, golden fixtures, GitHub workflow (2026-07-02)
 - [x] **Phase 4: Thin Bridge (Pi/Arduino)** - Minimal HTTP server: USB read, raw JSON return, mock for dev — no calibration logic on device (completed 2026-07-02)
-- [ ] **Phase 5: MA3 ↔ HTTP Integration** - bridge_client, remote measure, setup wizard, auto-loop
+- [x] **Phase 5: MA3 ↔ HTTP Integration** - bridge_client, remote measure, setup wizard, auto-loop (completed 2026-07-02)
 - [ ] **Phase 6: Operator UX, Docs & Show Readiness** - v0.4 workflow modularized, patch UX, runbooks
 - [ ] **Phase 7: Console UAT & Hardware Validation** - Real MA3 + Pi + C-7000 end-to-end sign-off
 
@@ -143,20 +143,20 @@ Plans:
   3. After successful remote measure, auto-loop runs up to 3 apply/measure cycles using `goals_met()` with operator exit at any point
   4. Bridge Status and setup wizard (discover + test measure) are reachable from the plugin main menu — **all setup UX on console**, not on Pi
 
-**Plans**: 3 plans
+**Plans**: 3/3 plans complete
 
 Plans:
 **Wave 1**
 
-- [ ] 05-01-PLAN.md — Extract bridge_client.lua + domain loader (ARCH-04, MTR-03)
+- [x] 05-01-PLAN.md — Extract bridge_client.lua + domain loader (ARCH-04, MTR-03)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 05-02-PLAN.md — Wire monolith, error UX, C-7000 gate, Bridge Status (MTR-03, MTR-04, MTR-06)
+- [x] 05-02-PLAN.md — Wire monolith, error UX, C-7000 gate, Bridge Status (MTR-03, MTR-04, MTR-06)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 05-03-PLAN.md — Auto-loop verify + Lua tests + validation (MTR-05)
+- [x] 05-03-PLAN.md — Auto-loop verify + Lua tests + validation (MTR-05)
 
 **UI hint**: yes
 
@@ -203,7 +203,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 (Phase 4 
 | 2. Plugin Hardening & Test Seams | 3/3 | Executed | 2026-07-02 |
 | 3. Shared Test Strategy & CI | 3/3 | Complete    | 2026-07-02 |
 | 4. Pi Bridge Production | 3/3 | Complete   | 2026-07-02 |
-| 5. MA3 ↔ HTTP Integration | 0/TBD | Not started | - |
+| 5. MA3 ↔ HTTP Integration | 3/3 | Complete   | 2026-07-02 |
 | 6. Operator UX, Docs & Show Readiness | 0/TBD | Not started | - |
 | 7. Console UAT & Hardware Validation | 0/TBD | Not started | - |
 
