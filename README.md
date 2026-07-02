@@ -70,12 +70,14 @@ manually if you want to contribute fixture data to others.
 
 ## Installation
 
-The repo root is **not** the plugin folder — `plugin.xml`, `lua/`, and `data/`
-live loose at repo root alongside dev-only stuff (`tests/`, `sekonic-bridge/`,
-`.github/`). GrandMA3 needs just those three, in a folder **named exactly
-`SekonicCalibrator`** (the plugin code hard-codes that name when it looks for
-its own config and data). `package-plugin.sh` builds that folder for you so
-you never have to guess which files to copy.
+The repo root is **not** the plugin folder — `plugin.xml`, `SekonicCalibrator.lua`,
+`lua/`, and `data/` live loose at repo root alongside dev-only stuff (`tests/`,
+`sekonic-bridge/`, `.github/`). GrandMA3 needs those four, laid out exactly
+right (the entry script `SekonicCalibrator.lua` must sit directly beside
+`plugin.xml`; the four helper modules stay in `lua/`), in a folder **named
+exactly `SekonicCalibrator`** (the plugin code hard-codes that name when it
+looks for its own config and data). `package-plugin.sh` assembles that layout
+for you so you never have to guess which files go where.
 
 ### Quick install (recommended)
 
@@ -85,8 +87,8 @@ you never have to guess which files to copy.
 
 Builds the plugin folder and copies it straight to the standard GrandMA3
 plugin library path for your OS (macOS/Linux: `~/MALightingTechnology/...`).
-Re-run it any time to upgrade — it overwrites `plugin.xml` and `lua/` but
-**never touches your `config.json` or saved data**.
+Re-run it any time to upgrade — it overwrites `plugin.xml`, `SekonicCalibrator.lua`,
+and `lua/` but **never touches your `config.json` or saved data**.
 
 For Windows, or any non-default location, pass the path explicitly:
 

@@ -21,10 +21,13 @@ local function load_domain_modules()
         local ok, dir = pcall(function()
             return GetPath(Enums.PathType.PluginLibrary)
         end)
-        if ok and dir then plugin_dir = dir end
+        -- GetPath(PluginLibrary) returns the shared library folder that holds
+        -- every plugin, not this plugin's own folder — must append our name,
+        -- same as get_plugin_dir() does below for config.json/data access.
+        if ok and dir and dir ~= "" then plugin_dir = dir .. "/SekonicCalibrator" end
     end
     if not plugin_dir then
-        plugin_dir = debug.getinfo(1, "S").source:match("^@(.+)[/\][^/\]+$")
+        plugin_dir = debug.getinfo(1, "S").source:match("^@(.+)[/\\][^/\\]+$")
             or "."
     end
     package.path = plugin_dir .. "/lua/?.lua;" .. package.path

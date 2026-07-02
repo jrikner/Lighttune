@@ -53,6 +53,9 @@ rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR/lua" "$OUT_DIR/data/measurements"
 
 cp plugin.xml "$OUT_DIR/plugin.xml"
+# GrandMA3's ComponentLua FileName must be a bare filename resolved next to
+# plugin.xml — the entry point goes at the plugin root, not inside lua/.
+cp SekonicCalibrator.lua "$OUT_DIR/SekonicCalibrator.lua"
 cp lua/*.lua "$OUT_DIR/lua/"
 cp data/config.json.example "$OUT_DIR/data/config.json.example"
 touch "$OUT_DIR/data/measurements/.gitkeep"
@@ -91,8 +94,9 @@ DEST="$INSTALL_TARGET/SekonicCalibrator"
 
 if [ -d "$DEST" ]; then
     warn "Existing plugin found at $DEST"
-    warn "Overwriting plugin.xml and lua/ — your config.json and data/ are left untouched."
+    warn "Overwriting plugin.xml, SekonicCalibrator.lua, and lua/ — your config.json and data/ are left untouched."
     cp "$OUT_DIR/plugin.xml" "$DEST/plugin.xml"
+    cp "$OUT_DIR/SekonicCalibrator.lua" "$DEST/SekonicCalibrator.lua"
     rm -rf "$DEST/lua"
     cp -R "$OUT_DIR/lua" "$DEST/lua"
     mkdir -p "$DEST/data"
