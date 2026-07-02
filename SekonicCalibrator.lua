@@ -12,24 +12,52 @@
 
 
 --------------------------------------------------------------------------------
+-- PLUGIN FOLDER PATH RESOLUTION
+--------------------------------------------------------------------------------
+-- GetPath(Enums.PathType.PluginLibrary) returns GrandMA3's own internal
+-- shared resource folder (confirmed on a real console: it resolved to
+-- ".../gma3_2.3.2/shared/resource/lib_plugins", causing "cannot open
+-- .../lua/color_math.lua" at load time) — NOT the user's installed plugin
+-- folder. debug.getinfo(1,"S").source is also unusable here: GrandMA3 loads
+-- plugin components via load() with a synthetic chunk name
+-- ("SekonicCalibrator@SekonicCalibrator.lua"), not a real file path. The
+-- install location is fixed by this plugin's own install instructions
+-- (package-plugin.sh / README), so construct it directly instead of
+-- trusting either API for it.
+
+-- Returns the OS path separator using the GrandMA3 GetPathSeparator() API.
+local function get_sep()
+    local sep = "/"
+    pcall(function() sep = GetPathSeparator() end)
+    return sep
+end
+
+-- Returns the path to the SekonicCalibrator plugin root directory.
+local function get_plugin_dir()
+    local host = "Linux"
+    pcall(function() host = HostOS() end)
+    if host == "Windows" then
+        local sep = "\\"
+        local appdata = (os.getenv and os.getenv("APPDATA"))
+                     or "C:\\Users\\Default\\AppData\\Roaming"
+        return appdata .. sep .. "MALightingTechnology" .. sep
+            .. "gma3_library" .. sep .. "datapools" .. sep
+            .. "plugins" .. sep .. "SekonicCalibrator"
+    else
+        local sep = get_sep()
+        local home = (os.getenv and os.getenv("HOME")) or "/root"
+        return home .. sep .. "MALightingTechnology" .. sep
+            .. "gma3_library" .. sep .. "datapools" .. sep
+            .. "plugins" .. sep .. "SekonicCalibrator"
+    end
+end
+
+--------------------------------------------------------------------------------
 -- DOMAIN MODULE LOADER (Phase 2 — require + dofile fallback per D-23)
 --------------------------------------------------------------------------------
 
 local function load_domain_modules()
-    local plugin_dir
-    if GetPath and Enums then
-        local ok, dir = pcall(function()
-            return GetPath(Enums.PathType.PluginLibrary)
-        end)
-        -- GetPath(PluginLibrary) returns the shared library folder that holds
-        -- every plugin, not this plugin's own folder — must append our name,
-        -- same as get_plugin_dir() does below for config.json/data access.
-        if ok and dir and dir ~= "" then plugin_dir = dir .. "/SekonicCalibrator" end
-    end
-    if not plugin_dir then
-        plugin_dir = debug.getinfo(1, "S").source:match("^@(.+)[/\\][^/\\]+$")
-            or "."
-    end
+    local plugin_dir = get_plugin_dir()
     package.path = plugin_dir .. "/lua/?.lua;" .. package.path
 
     local function try_require(name)
@@ -1335,7 +1363,9 @@ end
 -- SECTION 5: DATA LOGGING
 --
 -- io.popen() and os.execute() are NOT available in GrandMA3 Lua.
--- Path resolution uses GetPath(Enums.PathType.PluginLibrary) + GetPathSeparator().
+-- get_sep()/get_plugin_dir() are defined near the top of this file (used
+-- by the domain module loader too); see the comment there for why they
+-- don't use GetPath(Enums.PathType.PluginLibrary).
 -- Community upload to GitHub requires HTTPS; only lua.ftp (plain FTP) is
 -- documented in the GrandMA3 Lua environment. Fixture data is therefore saved
 -- locally only. To share data with the community, export fixture_log.json
@@ -1344,41 +1374,6 @@ end
 -- The data/ directory must exist inside the plugin folder (it is part of the
 -- plugin package). No runtime directory creation is performed.
 --------------------------------------------------------------------------------
-
--- Returns the OS path separator using the GrandMA3 GetPathSeparator() API.
-local function get_sep()
-    local sep = "/"
-    pcall(function() sep = GetPathSeparator() end)
-    return sep
-end
-
--- Returns the path to the SekonicCalibrator plugin root directory.
--- Uses GetPath(Enums.PathType.PluginLibrary) when available;
--- falls back to a HostOS-based path if the API is unavailable.
-local function get_plugin_dir()
-    local sep = get_sep()
-    local base = nil
-    pcall(function() base = GetPath(Enums.PathType.PluginLibrary) end)
-    if base and base ~= "" then
-        return base .. sep .. "SekonicCalibrator"
-    end
-    -- Fallback: construct path from HostOS
-    local host = "Linux"
-    pcall(function() host = HostOS() end)
-    if host == "Windows" then
-        sep = "\\"
-        local appdata = (os.getenv and os.getenv("APPDATA"))
-                     or "C:\\Users\\Default\\AppData\\Roaming"
-        return appdata .. sep .. "MALightingTechnology" .. sep
-            .. "gma3_library" .. sep .. "datapools" .. sep
-            .. "plugins" .. sep .. "SekonicCalibrator"
-    else
-        local home = (os.getenv and os.getenv("HOME")) or "/root"
-        return home .. sep .. "MALightingTechnology" .. sep
-            .. "gma3_library" .. sep .. "datapools" .. sep
-            .. "plugins" .. sep .. "SekonicCalibrator"
-    end
-end
 
 -- Returns the path to the data directory (plugin_dir/data).
 local function get_data_dir()
