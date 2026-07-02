@@ -70,44 +70,93 @@ manually if you want to contribute fixture data to others.
 
 ## Installation
 
-1. Copy the entire `SekonicCalibrator/` folder into the GrandMA3 plugin library:
+The repo root is **not** the plugin folder — `plugin.xml`, `lua/`, and `data/`
+live loose at repo root alongside dev-only stuff (`tests/`, `sekonic-bridge/`,
+`.github/`). GrandMA3 needs just those three, in a folder **named exactly
+`SekonicCalibrator`** (the plugin code hard-codes that name when it looks for
+its own config and data). `package-plugin.sh` builds that folder for you so
+you never have to guess which files to copy.
 
-   **Windows:**
-   ```
-   C:\ProgramData\MALightingTechnology\gma3_library\datapools\plugins\SekonicCalibrator\
-   ```
+### Quick install (recommended)
 
-   **macOS / Linux (show computer):**
-   ```
-   ~/MALightingTechnology/gma3_library/datapools/plugins/SekonicCalibrator/
-   ```
+```bash
+./package-plugin.sh --install
+```
 
-2. In GrandMA3: `Menu → Plugin Pool → Import → SekonicCalibrator`
+Builds the plugin folder and copies it straight to the standard GrandMA3
+plugin library path for your OS (macOS/Linux: `~/MALightingTechnology/...`).
+Re-run it any time to upgrade — it overwrites `plugin.xml` and `lua/` but
+**never touches your `config.json` or saved data**.
 
-3. Assign to a macro key or executor, then run by double-tapping the plugin entry.
+For Windows, or any non-default location, pass the path explicitly:
 
-4. **Optional — remote C-7000:** Run `sekonic-bridge/setup-mac.sh` on the same Mac as onPC (primary path, no Pi needed), or deploy `sekonic-bridge/` to a Raspberry Pi for a stage-split setup (see `sekonic-bridge/README.md`), then create `config.json` at the **plugin root** with `bridge_ip` and `bridge_port`.
+```bash
+./package-plugin.sh --install "/path/to/gma3_library/datapools/plugins"
+```
+
+Prefer to copy the files yourself (e.g. onto a different machine)? Build the
+folder without installing it:
+
+```bash
+./package-plugin.sh          # writes dist/SekonicCalibrator/
+./package-plugin.sh --zip    # also writes dist/SekonicCalibrator.zip
+```
+
+Then copy `dist/SekonicCalibrator/` (the whole folder, keeping that exact
+name) into:
+
+| OS | Plugin library path |
+|---|---|
+| Windows | `C:\ProgramData\MALightingTechnology\gma3_library\datapools\plugins\` |
+| macOS / Linux | `~/MALightingTechnology/gma3_library/datapools/plugins/` |
+
+### In GrandMA3
+
+1. `Menu → Plugin Pool → Import → SekonicCalibrator`
+2. Assign to a macro key or executor, then run by double-tapping the plugin entry.
+
+### Optional — remote C-7000 measurement
+
+Run `sekonic-bridge/setup-mac.sh` on the same Mac as onPC (primary path, no
+Pi needed), or deploy `sekonic-bridge/` to a Raspberry Pi for a stage-split
+setup — see `sekonic-bridge/README.md`. Then set `bridge_ip`/`bridge_port` in
+the plugin's `config.json` (see **Configuration** below).
 
 ---
 
 ## Configuration
 
-Copy `data/config.json.example` to **`config.json` at the plugin root** (same
-directory as `plugin.xml`, **not** inside `data/`):
+There are **three** separate config files in this project — don't mix them up:
+
+| File | Lives where | Edited by | Purpose |
+|---|---|---|---|
+| **`config.json`** | Plugin root — `SekonicCalibrator/config.json`, next to `plugin.xml`, **not** inside `data/` | You | Tells the **GrandMA3 plugin** the bridge's address and your GitHub username |
+| **`bridge_config.json`** | `sekonic-bridge/bridge_config.json`, next to `server.py` | You (optional) | Tells the **bridge server** an API key to require, if you want auth |
+| **`device_config.json`** | Same folder as `server.py` | The bridge itself | Auto-written by `/discover` — meter VID/PID, protocol state. Never edit by hand |
+
+### `config.json` (the one you need)
+
+Copy the example into your installed plugin folder and edit it:
+
+```bash
+cp data/config.json.example ~/MALightingTechnology/gma3_library/datapools/plugins/SekonicCalibrator/config.json
+```
 
 ```json
 {
   "github_username": "your_github_username",
-  "bridge_ip":       "192.168.1.50",
-  "bridge_port":     8765
+  "bridge_ip":        "127.0.0.1",
+  "bridge_port":      8765,
+  "bridge_api_key":   ""
 }
 ```
 
 | Field | Purpose |
 |---|---|
 | `github_username` | Stored as `contributor` in `data/fixture_log.json` (optional) |
-| `bridge_ip` | Pi bridge IP on show LAN — enables remote measure and auto-loop when set |
+| `bridge_ip` | `127.0.0.1` if the bridge runs on the same Mac as onPC (primary path); a LAN IP (e.g. `192.168.1.50`) for a Pi on a different machine |
 | `bridge_port` | Bridge HTTP port (default **8765** if omitted) |
+| `bridge_api_key` | Only needed if the bridge has a `bridge_api_key` configured (see `sekonic-bridge/README.md`) |
 
 `config.json` is gitignored and must never contain secrets committed to git.
 

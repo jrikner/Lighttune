@@ -1,3 +1,6 @@
+# Built plugin package (from package-plugin.sh)
+dist/
+
 # Never commit operator config (plugin root, same folder as plugin.xml)
 config.json
 
