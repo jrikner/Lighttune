@@ -64,7 +64,7 @@ manually if you want to contribute fixture data to others.
 - GrandMA3 console (software v1.6 or later recommended)
 - Sekonic C-700, C-800, or C-7000 spectromaster
 - Fixture groups configured in your showfile
-- **Remote C-7000 (optional):** Raspberry Pi on the show LAN running `sekonic-bridge`, USB to C-7000, console and Pi reachable on the same network
+- **Remote C-7000 (optional):** `sekonic-bridge` running on the same Mac as onPC (primary), or on a Raspberry Pi on the show LAN when console and meter are on different machines (stage-split)
 
 ---
 
@@ -86,7 +86,7 @@ manually if you want to contribute fixture data to others.
 
 3. Assign to a macro key or executor, then run by double-tapping the plugin entry.
 
-4. **Optional — remote C-7000:** Deploy `sekonic-bridge/` to a Raspberry Pi (see `sekonic-bridge/README.md`), then create `config.json` at the **plugin root** with `bridge_ip` and `bridge_port`.
+4. **Optional — remote C-7000:** Run `sekonic-bridge/setup-mac.sh` on the same Mac as onPC (primary path, no Pi needed), or deploy `sekonic-bridge/` to a Raspberry Pi for a stage-split setup (see `sekonic-bridge/README.md`), then create `config.json` at the **plugin root** with `bridge_ip` and `bridge_port`.
 
 ---
 

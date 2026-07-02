@@ -13,12 +13,99 @@ When **GrandMA3 onPC and the C-7000 share one Mac**, you do **not** need a Raspb
               [GrandMA3 onPC — same Mac]
 ```
 
-1. Install Python deps and run `sekonic-bridge` on the Mac (see Setup below).
+1. Run `./setup-mac.sh` on the Mac (see **Setup — macOS** below) — installs deps and an auto-start service.
 2. Plug the C-7000 into the Mac via USB.
 3. In plugin `config.json`: `"bridge_ip": "127.0.0.1"`, `"bridge_port": 8765`.
 4. Main menu → **Bridge Status** to confirm connection.
 
 Use the Pi path below only when the console and meter are on **different** machines (FOH console, meter on stage).
+
+---
+
+## Setup — macOS (Primary Path)
+
+Run this on the same Mac as GrandMA3 onPC. No Raspberry Pi, no `sudo`, and
+no separate network needed — the bridge talks to the plugin over
+`127.0.0.1`.
+
+### Requirements
+
+- macOS with [Homebrew](https://brew.sh) installed
+- Sekonic C-7000 connected via USB
+
+### Step 1 — Run the setup script
+
+```bash
+git clone https://github.com/jrikner/Lighttune-0.1
+cd Lighttune-0.1/sekonic-bridge
+./setup-mac.sh
+```
+
+This installs `python3` and `libusb` via Homebrew, creates a virtualenv in
+`sekonic-bridge/venv`, and installs a per-user `launchd` agent
+(`~/Library/LaunchAgents/com.lighttune.sekonic-bridge.plist`) that starts
+the bridge now and automatically at every login, restarting it if it
+crashes.
+
+To try it without hardware first:
+
+```bash
+./setup-mac.sh --mock
+```
+
+To install dependencies only, without the auto-start service:
+
+```bash
+./setup-mac.sh --no-service
+# then start it manually whenever you need it:
+./start.sh          # real hardware
+./start.sh --mock    # mock meter
+```
+
+### Step 2 — Point the plugin at localhost
+
+Copy `data/config.json.example` to `config.json` at the **plugin root**
+(same folder as `plugin.xml`) and set:
+
+```json
+{
+  "bridge_ip":   "127.0.0.1",
+  "bridge_port": 8765
+}
+```
+
+### Step 3 — Verify
+
+```bash
+curl http://127.0.0.1:8765/status
+```
+
+From the console, use the **"Bridge Status"** option in the plugin's main
+menu to confirm connectivity, then run **Bridge Status → Run Setup** to
+discover the meter over USB (see [Setup wizard](#setup-wizard) below).
+
+### Managing the macOS service
+
+```bash
+launchctl print gui/$(id -u)/com.lighttune.sekonic-bridge          # status
+launchctl kickstart -k gui/$(id -u)/com.lighttune.sekonic-bridge   # restart
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.lighttune.sekonic-bridge.plist  # stop + uninstall
+tail -f sekonic-bridge/bridge.log                                  # live log
+```
+
+### macOS troubleshooting
+
+- **`pyusb could not enumerate USB devices`** — reinstall libusb: `brew reinstall libusb`.
+- **Meter not found in `/discover`** — unplug/replug the C-7000, then check
+  `system_profiler SPUSBDataType | grep -A3 -i sekonic` to confirm macOS
+  sees the device at the OS level before checking the bridge.
+- **Bridge doesn't survive reboot/logout** — `launchd` agents only run
+  while that user is logged in (not before login, unlike a Pi's systemd
+  service). If the Mac is shared or auto-logs-in as a dedicated show
+  account, enable auto-login for that account in System Settings.
+- **Port already in use** — another process is bound to 8765; stop it or
+  edit the `ProgramArguments` in the plist to pass `--port <other>` and
+  update the plugin's `bridge_port` to match.
 
 ---
 
@@ -149,16 +236,17 @@ ssh pi@sekonic-bridge.local
 
 ## Configuring GrandMA3
 
-Add the bridge IP to `config.json` in the SekonicCalibrator data folder:
+Add the bridge IP to `config.json` at the **SekonicCalibrator plugin root**
+(same folder as `plugin.xml`, **not** inside `data/`):
 
 **Windows path:**
 ```
-%APPDATA%\MALightingTechnology\gma3_library\datapools\plugins\SekonicCalibrator\data\config.json
+%APPDATA%\MALightingTechnology\gma3_library\datapools\plugins\SekonicCalibrator\config.json
 ```
 
 **Linux/macOS path:**
 ```
-~/MALightingTechnology/gma3_library/datapools/plugins/SekonicCalibrator/data/config.json
+~/MALightingTechnology/gma3_library/datapools/plugins/SekonicCalibrator/config.json
 ```
 
 Example `config.json`:
@@ -322,6 +410,9 @@ as `trigger_cmd_hex`.
 
 ## Troubleshooting
 
+> The sections below assume the Pi/systemd path. On macOS, see
+> [macOS troubleshooting](#macos-troubleshooting) instead.
+
 ### Bridge service not starting
 ```bash
 journalctl -u sekonic-bridge -n 50 --no-pager
@@ -414,10 +505,10 @@ When no key is configured, all routes behave as before (open LAN). When a key is
 
 ## Architecture Notes
 
-- **Thin bridge:** The Pi server is transport-only — raw meter fields (CCT, Duv, CRI, R9) over JSON. No calibration logic, color math, or fixture control runs on the Pi.
+- **Thin bridge:** The server is transport-only — raw meter fields (CCT, Duv, CRI, R9) over JSON. No calibration logic, color math, or fixture control runs on the bridge, on the Pi or the Mac.
 - **USB bulk driver:** `meter_c7000_bulk.py` implements the skreader bulk protocol (not HID). `meter_mock.py` provides development mode.
-- The bridge server runs as a `systemd` service under a dedicated unprivileged `sekonic` user
-- USB access is granted via a udev rule — no `sudo` required at runtime
+- **Pi:** the bridge runs as a `systemd` service under a dedicated unprivileged `sekonic` user; USB access is granted via a udev rule — no `sudo` required at runtime.
+- **macOS:** the bridge runs as a per-user `launchd` agent (`com.lighttune.sekonic-bridge`, installed by `setup-mac.sh`); no `sudo` and no udev equivalent needed — libusb talks to the C-7000 directly.
 - The `/measure` endpoint blocks until the meter responds (up to 35 s) — this is intentional; it keeps the Lua plugin simple (one `socket.http` call)
 - Concurrent measurement requests are rejected with HTTP 409 to prevent race conditions
 - All measurements are logged to `bridge.log` in the install directory

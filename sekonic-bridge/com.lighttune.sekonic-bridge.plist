@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Sekonic Bridge — macOS launchd service (Lighttune)
+
+  Installed by setup-mac.sh into ~/Library/LaunchAgents/. Runs the bridge
+  as the logged-in user (not root) so it can see the same USB device
+  permissions as the interactive session, and starts it automatically at
+  login plus keeps it alive if it crashes.
+
+  Paths below are placeholders — setup-mac.sh rewrites INSTALL_DIR and
+  PYTHON_BIN to the real values for this machine before copying the file.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.lighttune.sekonic-bridge</string>
+
+	<key>ProgramArguments</key>
+	<array>
+		<string>__PYTHON_BIN__</string>
+		<string>__INSTALL_DIR__/server.py</string>
+	</array>
+
+	<key>WorkingDirectory</key>
+	<string>__INSTALL_DIR__</string>
+
+	<key>RunAtLoad</key>
+	<true/>
+
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+
+	<key>StandardOutPath</key>
+	<string>__INSTALL_DIR__/bridge.log</string>
+
+	<key>StandardErrorPath</key>
+	<string>__INSTALL_DIR__/bridge.err.log</string>
+
+	<key>ProcessType</key>
+	<string>Interactive</string>
+</dict>
+</plist>

@@ -4,3 +4,13 @@ config.json
 # Local measurement logs
 data/fixture_log.json
 data/measurements/*.json
+
+# Sekonic bridge runtime artifacts
+sekonic-bridge/venv/
+sekonic-bridge/bridge.log
+sekonic-bridge/bridge.err.log
+sekonic-bridge/device_config.json
+sekonic-bridge/bridge_config.json
+__pycache__/
+*.pyc
+.venv/
