@@ -4,17 +4,17 @@ milestone: v0.4
 milestone_name: milestone
 current_phase: 4
 current_phase_name: Thin Bridge (Pi/Arduino)
-status: ready_to_execute
-stopped_at: Phase 4 planned
-last_updated: "2026-07-02T14:00:00.000Z"
+status: awaiting_human_verification
+stopped_at: Phase 4 executed — pending /gsd-verify-work 4
+last_updated: "2026-07-02T18:00:00.000Z"
 last_activity: 2026-07-02
-last_activity_desc: Phase 4 planned via /gsd-plan-phase 4 (3 plans, 3 waves)
+last_activity_desc: Phase 4 executed on claude/lighttune-main @ a5eb6d1; automated gates green
 progress:
   total_phases: 7
   completed_phases: 3
-  total_plans: 12
-  completed_plans: 9
-  percent: 43
+  total_plans: 15
+  completed_plans: 12
+  percent: 57
 ---
 
 # Project State
@@ -22,23 +22,24 @@ progress:
 ## Project Reference
 
 **Core value:** FOH calibration in under five minutes with broadcast-grade targets.
-**Current focus:** Phase 4 — Thin Bridge (Pi/Arduino)
+**Current focus:** Phase 4 — Thin Bridge (awaiting human UAT on MA3)
 
 ## Current Position
 
 Phase: 4 of 7 (Thin Bridge)
-Plan: 0 of 3 (04-01 next)
-Status: Ready to execute (`/gsd-execute-phase 4`)
-Last activity: 2026-07-02 — Phase 4 planned (RESEARCH + 3 PLAN files)
+Plan: 3 of 3 complete (04-01, 04-02, 04-03)
+Status: Automated execution complete — run `/gsd-verify-work 4` on GrandMA3
+Last activity: 2026-07-02 — Phase 4 product merged to claude/lighttune-main @ a5eb6d1
 
-Progress: [██████░░░░] 43%
+Progress: [████████░░] 57%
 
-## Phase 4 locked decisions
+## Phase 4 execution summary
 
-- In-plugin Bridge Setup wizard must remain (`/discover`, `/capture`, `/learn_trigger`)
-- Thin bridge = bulk rename + auth + internal cleanup — not removing setup HTTP API
-- MTR-08: X-Bridge-Key on all routes when configured
+- MTR-02: `meter_c7000_bulk.py` + `MeterBackend` protocol
+- MTR-08: Optional `X-Bridge-Key` auth (bridge + plugin + pytest)
+- MTR-01/MTR-07: C-7000 setup fast-path; mock setup smoke tests
+- In-plugin wizard routes preserved (`/discover`, `/capture`, `/learn_trigger`)
 
 ## Session Continuity
 
-Resume file: `.planning/phases/04-thin-bridge-pi-arduino/04-01-PLAN.md`
+Resume: `/gsd-verify-work 4` for D-75 human checklist (04-UAT.md)

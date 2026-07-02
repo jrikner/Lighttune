@@ -14,7 +14,7 @@ Brownfield replan: cherry-pick proven commits onto main, keep **one GrandMA3 plu
 - [ ] **Phase 1: Canonical Merge & Baseline** - Single truthful source tree with aligned docs, version, and config paths
 - [ ] **Phase 2: Plugin Hardening & Test Seams** - Single-plugin layout; extract only what host tests require; hardened JSON in-plugin
 - [x] **Phase 3: Shared Test Strategy & CI** - Host Lua tests, bridge pytest, golden fixtures, GitHub workflow (2026-07-02)
-- [ ] **Phase 4: Thin Bridge (Pi/Arduino)** - Minimal HTTP server: USB read, raw JSON return, mock for dev — no calibration logic on device
+- [x] **Phase 4: Thin Bridge (Pi/Arduino)** - Minimal HTTP server: USB read, raw JSON return, mock for dev — no calibration logic on device (completed 2026-07-02)
 - [ ] **Phase 5: MA3 ↔ HTTP Integration** - bridge_client, remote measure, setup wizard, auto-loop
 - [ ] **Phase 6: Operator UX, Docs & Show Readiness** - v0.4 workflow modularized, patch UX, runbooks
 - [ ] **Phase 7: Console UAT & Hardware Validation** - Real MA3 + Pi + C-7000 end-to-end sign-off
@@ -116,20 +116,20 @@ Plans:
   3. When `bridge_api_key` is set, bridge rejects requests without matching `X-Bridge-Key` header; plugin sends key from `config.json`
   4. Mock mode returns realistic readings for dev without hardware; setup routes succeed in mock mode
 
-**Plans**: 3 plans
+**Plans**: 3/3 plans complete
 
 Plans:
 **Wave 1**
 
-- [ ] 04-01-PLAN.md — Bulk driver rename + MeterBackend + packaging (MTR-02)
+- [x] 04-01-PLAN.md — Bulk driver rename + MeterBackend + packaging (MTR-02)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 04-02-PLAN.md — API key auth bridge + plugin + pytest (MTR-08)
+- [x] 04-02-PLAN.md — API key auth bridge + plugin + pytest (MTR-08)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 04-03-PLAN.md — Setup internal thinning + validation gate (MTR-01, MTR-07, D-75)
+- [x] 04-03-PLAN.md — Setup internal thinning + validation gate (MTR-01, MTR-07, D-75)
 
 ### Phase 5: MA3 ↔ HTTP Integration
 
@@ -191,7 +191,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 (Phase 4 
 | 1. Canonical Merge & Baseline | 3/3 | Complete | 2026-07-01 |
 | 2. Plugin Hardening & Test Seams | 3/3 | Executed | 2026-07-02 |
 | 3. Shared Test Strategy & CI | 3/3 | Complete    | 2026-07-02 |
-| 4. Pi Bridge Production | 0/TBD | Not started | - |
+| 4. Pi Bridge Production | 3/3 | Complete   | 2026-07-02 |
 | 5. MA3 ↔ HTTP Integration | 0/TBD | Not started | - |
 | 6. Operator UX, Docs & Show Readiness | 0/TBD | Not started | - |
 | 7. Console UAT & Hardware Validation | 0/TBD | Not started | - |
