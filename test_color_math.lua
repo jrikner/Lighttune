@@ -1,8 +1,12 @@
 -- test_color_math.lua
--- Standalone Lua 5.4 unit tests for SekonicCalibrator color math functions.
--- Run with: lua test_color_math.lua
---
--- Tests exercise pure color math logic and DB helpers independently of MA3 API.
+-- Standalone Lua 5.4 unit tests for SekonicCalibrator domain modules.
+-- Run with: lua5.4 test_color_math.lua
+
+package.path = package.path .. ";./lua/?.lua"
+
+local color_math  = require("color_math")
+local fixture_db = require("fixture_db")
+local goals      = require("goals")
 
 local PASS = 0
 local FAIL = 0
@@ -54,255 +58,27 @@ local function section(name)
     print("\n[" .. name .. "]")
 end
 
---------------------------------------------------------------------------------
--- Inline copies (mirrors SekonicCalibrator.lua, sections 2 and 2b)
---------------------------------------------------------------------------------
+-- Aliases for test readability
+local cct_to_xy = color_math.cct_to_xy
+local xy_to_uvp = color_math.xy_to_uvp
+local uvp_to_xy = color_math.uvp_to_xy
+local apply_duv_correction = color_math.apply_duv_correction
+local xy_to_rgb = color_math.xy_to_rgb
+local rgb_to_hsb = color_math.rgb_to_hsb
+local rate_quality = color_math.rate_quality
+local rate_duv = color_math.rate_duv
+local gel_hint = color_math.gel_hint
+local QUALITY = goals.QUALITY
 
-local CCT_MIN = 1667
-local CCT_MAX = 25000
-
-local function cct_to_xy(T)
-    T = math.max(CCT_MIN, math.min(CCT_MAX, T))
-    local x, y
-    if T <= 4000 then
-        x = (-0.2661239e9/T^3)+(-0.2343580e6/T^2)+(0.8776956e3/T)+0.179910
-        y = (-1.1063814*x^3)+(-1.34811020*x^2)+(2.18555832*x)-0.20219683
-    else
-        x = (-3.0258469e9/T^3)+(2.1070379e6/T^2)+(0.2226347e3/T)+0.240390
-        y = (3.0817580*x^3)+(-5.87338670*x^2)+(3.75112997*x)-0.37001483
-    end
-    return x, y
-end
-
-local function xy_to_uvp(x, y)
-    local denom = -2*x+12*y+3; if denom==0 then return 0,0 end
-    return 4*x/denom, 9*y/denom
-end
-
-local function uvp_to_xy(up, vp)
-    local denom = 6*up-16*vp+12; if denom==0 then return 0,0 end
-    return 9*up/denom, 4*vp/denom
-end
-
-local function apply_duv_correction(x,y,measured_duv,target_duv)
-    local up,vp=xy_to_uvp(x,y); vp=vp+(target_duv-measured_duv)*1.5
-    return uvp_to_xy(up,vp)
-end
-
-local function xy_to_rgb(x,y)
-    if y==0 then y=0.0001 end
-    local X=x/y; local Y=1.0; local Z=(1-x-y)/y
-    local r=3.2404542*X-1.5371385*Y-0.4985314*Z
-    local g=-0.9692660*X+1.8760108*Y+0.0415560*Z
-    local b=0.0556434*X-0.2040259*Y+1.0572252*Z
-    r=math.max(0,r); g=math.max(0,g); b=math.max(0,b)
-    local mc=math.max(r,g,b)
-    if mc>0 then r=r/mc; g=g/mc; b=b/mc end
-    return r^(1/2.2), g^(1/2.2), b^(1/2.2)
-end
-
-local function rgb_to_hsb(r,g,b)
-    local mc=math.max(r,g,b); local mn=math.min(r,g,b); local d=mc-mn
-    local bri=mc; local s=(mc==0) and 0 or d/mc
-    local h
-    if d==0 then h=0
-    elseif mc==r then h=60*(((g-b)/d)%6)
-    elseif mc==g then h=60*(((b-r)/d)+2)
-    else h=60*(((r-g)/d)+4) end
-    if h<0 then h=h+360 end
-    return h,s,bri
-end
-
-local QUALITY = {
-    CRI  = { excellent=95, good=90, acceptable=80 },
-    R9   = { excellent=90, good=80, acceptable=50 },
-    TLCI = { excellent=90, good=75, acceptable=50 },
-    DUV  = { excellent=0.003, good=0.006, acceptable=0.010 },
-}
-
-local GEL_STEPS = {
-    { threshold=0.016, amount="Full" },
-    { threshold=0.010, amount="1/2"  },
-    { threshold=0.006, amount="1/4"  },
-    { threshold=0.003, amount="1/8"  },
-}
-
-local function gel_hint(duv)
-    local abs_duv=math.abs(duv); local amount=nil
-    for _,step in ipairs(GEL_STEPS) do
-        if abs_duv>step.threshold then amount=step.amount; break end
-    end
-    if not amount then return nil end
-    if duv>0 then return string.format("%s Minus Green  (Duv %+.4f, green shift)",  amount,duv)
-    else          return string.format("%s Plus Green   (Duv %+.4f, magenta shift)", amount,duv) end
-end
-
-local B64_CHARS  = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-local B64_LOOKUP = {}
-for i=1,#B64_CHARS do B64_LOOKUP[B64_CHARS:sub(i,i)]=i-1 end
-
-local function base64_encode(data)
-    local result={}
-    for i=1,#data,3 do
-        local a=data:byte(i) or 0; local b=data:byte(i+1) or 0; local c=data:byte(i+2) or 0
-        local n=(a<<16)|(b<<8)|c
-        result[#result+1]=B64_CHARS:sub(((n>>18)&63)+1,((n>>18)&63)+1)
-        result[#result+1]=B64_CHARS:sub(((n>>12)&63)+1,((n>>12)&63)+1)
-        result[#result+1]=B64_CHARS:sub(((n>>6) &63)+1,((n>>6) &63)+1)
-        result[#result+1]=B64_CHARS:sub(( n      &63)+1,( n     &63)+1)
-    end
-    local encoded=table.concat(result); local pad=(3-#data%3)%3
-    return encoded:sub(1,#encoded-pad)..("="):rep(pad)
-end
-
-local function base64_decode(data)
-    data=data:gsub("[^%w%+%/%=]",""); local result={}
-    for i=1,#data,4 do
-        local a=B64_LOOKUP[data:sub(i,  i  )] or 0
-        local b=B64_LOOKUP[data:sub(i+1,i+1)] or 0
-        local c=B64_LOOKUP[data:sub(i+2,i+2)] or 0
-        local d=B64_LOOKUP[data:sub(i+3,i+3)] or 0
-        local n=(a<<18)|(b<<12)|(c<<6)|d
-        result[#result+1]=string.char((n>>16)&0xFF)
-        if data:sub(i+2,i+2)~="=" then result[#result+1]=string.char((n>>8)&0xFF) end
-        if data:sub(i+3,i+3)~="=" then result[#result+1]=string.char( n    &0xFF) end
-    end
-    return table.concat(result)
-end
-
-local function rate_quality(value,thresholds)
-    if value>=thresholds.excellent   then return "Excellent"
-    elseif value>=thresholds.good    then return "Good"
-    elseif value>=thresholds.acceptable then return "Acceptable"
-    else return "Poor" end
-end
-
-local function rate_duv(duv)
-    local a=math.abs(duv)
-    if a<=QUALITY.DUV.excellent     then return "Excellent"
-    elseif a<=QUALITY.DUV.good      then return "Good"
-    elseif a<=QUALITY.DUV.acceptable then return "Acceptable"
-    else return "Poor" end
-end
-
--- ── DB helpers (mirrors Section 2b) ──────────────────────────────────────────
-
-local function json_get_str(json,key)  return json:match('"'..key..'"%s*:%s*"([^"]*)"') end
-local function json_get_num(json,key)  return tonumber(json:match('"'..key..'"%s*:%s*(-?%d+%.?%d*)')) end
-local function json_get_bool(json,key) return json:find('"'..key..'"%s*:%s*true') ~= nil end
-
-local function json_encode_db_record(rec)
-    local parts={}
-    local function s(k,v) if v~=nil then parts[#parts+1]='"'..k..'":"'..tostring(v):gsub('"','\\"')..'"' end end
-    local function n(k,v) if v~=nil then parts[#parts+1]='"'..k..'":'..tostring(v) end end
-    local function f(k,v) if v~=nil then parts[#parts+1]='"'..k..'":' ..string.format("%.4f",v) end end
-    local function b(k,v) if v       then parts[#parts+1]='"'..k..'":true' end end
-    s("make",rec.make); s("model",rec.model); n("kelvin",rec.kelvin)
-    s("date",rec.date); s("contributor",rec.contributor)
-    n("cct",rec.cct); f("duv",rec.duv); n("cri",rec.cri); n("r9",rec.r9)
-    if rec.tlci~=nil then n("tlci",rec.tlci) end
-    b("best_cri",rec.best_cri); b("best_r9",rec.best_r9)
-    b("best_tlci",rec.best_tlci); b("best_duv",rec.best_duv)
-    return "{"..table.concat(parts,",").."}"
-end
-
-local function json_encode_db_array(records)
-    if #records==0 then return "[]" end
-    local parts={}
-    for _,rec in ipairs(records) do parts[#parts+1]=json_encode_db_record(rec) end
-    return "[\n"..table.concat(parts,",\n").."\n]"
-end
-
+local json_encode_db_record = fixture_db.json_encode_db_record
+local json_encode_db_array = fixture_db.json_encode_db_array
 local function json_parse_db_array(content)
-    if not content or content:match("^%s*%[%s*%]%s*$") then return {} end
-    local records={}
-    for block in content:gmatch("%b{}") do
-        local make=json_get_str(block,"make"); local model=json_get_str(block,"model")
-        local kelvin=json_get_num(block,"kelvin")
-        if make and model and kelvin then
-            records[#records+1]={
-                make=make, model=model, kelvin=kelvin,
-                date=json_get_str(block,"date"),
-                contributor=json_get_str(block,"contributor"),
-                cct=json_get_num(block,"cct"),
-                duv=json_get_num(block,"duv"),
-                cri=json_get_num(block,"cri"), r9=json_get_num(block,"r9"),
-                tlci=json_get_num(block,"tlci"),
-                best_cri=json_get_bool(block,"best_cri"),
-                best_r9=json_get_bool(block,"best_r9"),
-                best_tlci=json_get_bool(block,"best_tlci"),
-                best_duv=json_get_bool(block,"best_duv"),
-            }
-        end
-    end
-    return records
+    return select(1, fixture_db.json_parse_db_array(content))
 end
-
-local function recompute_best_flags(records)
-    for _,rec in ipairs(records) do
-        rec.best_cri=nil; rec.best_r9=nil; rec.best_tlci=nil; rec.best_duv=nil
-    end
-    local groups={}
-    for i,rec in ipairs(records) do
-        local key=(rec.make or "").."|||"..(rec.model or "").."|||"..tostring(rec.kelvin or 0)
-        if not groups[key] then groups[key]={} end
-        groups[key][#groups[key]+1]=i
-    end
-    for _,idxs in pairs(groups) do
-        local bi_cri,bi_r9,bi_tlci,bi_duv=nil,nil,nil,nil
-        local bv_cri,bv_r9,bv_tlci,bv_duv=-math.huge,-math.huge,-math.huge,math.huge
-        for _,i in ipairs(idxs) do
-            local r=records[i]
-            if r.cri  and r.cri  >bv_cri  then bv_cri=r.cri;   bi_cri=i  end
-            if r.r9   and r.r9   >bv_r9   then bv_r9=r.r9;     bi_r9=i   end
-            if r.tlci and r.tlci >bv_tlci then bv_tlci=r.tlci;  bi_tlci=i end
-            if r.duv~=nil and math.abs(r.duv)<bv_duv then bv_duv=math.abs(r.duv); bi_duv=i end
-        end
-        if bi_cri  then records[bi_cri ].best_cri =true end
-        if bi_r9   then records[bi_r9  ].best_r9  =true end
-        if bi_tlci then records[bi_tlci].best_tlci=true end
-        if bi_duv  then records[bi_duv ].best_duv =true end
-    end
-end
-
-local function append_fixture_record(records,entry)
-    records[#records+1]={
-        make=entry.make, model=entry.model, kelvin=entry.kelvin,
-        date=entry.date or "2026-01-01",
-        contributor=entry.contributor or "local",
-        cct=entry.cct, duv=entry.duv, cri=entry.cri, r9=entry.r9, tlci=entry.tlci,
-    }
-    recompute_best_flags(records)
-end
-
-local function sort_fixture_records(records)
-    table.sort(records, function(a,b)
-        if a.make  ~=b.make   then return a.make  <b.make   end
-        if a.model ~=b.model  then return a.model <b.model  end
-        if a.kelvin~=b.kelvin then return a.kelvin<b.kelvin end
-        return (a.date or "")<(b.date or "")
-    end)
-end
-
-local function find_best_for_fixture(records,make,model,kelvin)
-    if not make or not model then return nil end
-    local result={entries={},best_cri=nil,best_r9=nil,best_tlci=nil,best_duv=nil}
-    for _,rec in ipairs(records) do
-        if rec.make==make and rec.model==model and rec.kelvin==kelvin then
-            result.entries[#result.entries+1]=rec
-            if rec.best_cri  then result.best_cri=rec  end
-            if rec.best_r9   then result.best_r9=rec   end
-            if rec.best_tlci then result.best_tlci=rec end
-            if rec.best_duv  then result.best_duv=rec  end
-        end
-    end
-    if #result.entries==0 then return nil end
-    return result
-end
-
---------------------------------------------------------------------------------
--- Tests
---------------------------------------------------------------------------------
+local recompute_best_flags = fixture_db.recompute_best_flags
+local append_fixture_record = fixture_db.append_fixture_record
+local sort_fixture_records = fixture_db.sort_fixture_records
+local find_best_for_fixture = fixture_db.find_best_for_fixture
 
 section("cct_to_xy – known reference values (Kang et al.)")
 do local x,y=cct_to_xy(3200); assert_near("3200K x",x,0.4232,0.005); assert_near("3200K y",y,0.3974,0.005) end
@@ -368,23 +144,6 @@ do local h=gel_hint(-0.012); assert_equal("Duv -0.012=1/2 Plus", h and h:sub(1,1
 do local h=gel_hint(0.020);  assert_equal("Duv +0.020=Full Minus",h and h:sub(1,12) or nil,"Full Minus G") end
 do local h=gel_hint(-0.020); assert_equal("Duv -0.020=Full Plus", h and h:sub(1,11) or nil,"Full Plus G")  end
 
-section("base64_encode – RFC 4648 vectors")
-assert_equal("encode ''",      base64_encode(""),"")
-assert_equal("encode 'f'",     base64_encode("f"),"Zg==")
-assert_equal("encode 'fo'",    base64_encode("fo"),"Zm8=")
-assert_equal("encode 'foo'",   base64_encode("foo"),"Zm9v")
-assert_equal("encode 'foobar'",base64_encode("foobar"),"Zm9vYmFy")
-
-section("base64_decode – roundtrip")
-assert_equal("decode ''",        base64_decode(""),"")
-assert_equal("decode 'Zg=='",    base64_decode("Zg=="),"f")
-assert_equal("decode 'Zm9v'",    base64_decode("Zm9v"),"foo")
-assert_equal("decode 'Zm9vYmFy'",base64_decode("Zm9vYmFy"),"foobar")
-do
-    local orig="Hello, world! 1234 \x00\xFF"
-    assert_equal("encode/decode roundtrip",base64_decode(base64_encode(orig)),orig)
-end
-
 section("json_encode_db_record / json_parse_db_array – flat schema roundtrip")
 
 do  -- empty array
@@ -438,6 +197,23 @@ do
     local enc=json_encode_db_record(rec)
     -- best_cri:true should NOT appear in the JSON when nil
     assert_false("best_cri absent when nil", enc:find('"best_cri"')~=nil)
+end
+
+
+section("json_parse_db_array – quote in make/model")
+do
+    local rec = {make='Acme "Pro" 600', model="X", kelvin=5600, date="2026-01-01", contributor="t",
+                 cct=5580, duv=0.003, cri=90, r9=80}
+    local enc = json_encode_db_array({rec})
+    local parsed, skipped = fixture_db.json_parse_db_array(enc)
+    assert_equal("quote make roundtrip count", #parsed, 1)
+    assert_equal("quote make preserved", parsed[1].make, 'Acme "Pro" 600')
+    assert_equal("quote skipped", skipped or 0, 0)
+end
+
+do
+    local parsed, skipped = fixture_db.json_parse_db_array('[{broken json}]')
+    assert_true("malformed block skipped", (skipped or 0) >= 1)
 end
 
 section("recompute_best_flags – correctness")
@@ -562,6 +338,31 @@ do
 
     local histNil=find_best_for_fixture(records,"Unknown","Model",5600)
     assert_equal("no data returns nil",histNil,nil)
+end
+
+
+section("goals_met – session goal boundaries")
+do
+    local g = { cct=5600, duv=0.000, cri={mode=goals.GOAL_SKIP}, r9={mode=goals.GOAL_SKIP}, tlci={mode=goals.GOAL_SKIP} }
+    assert_true("exact targets met", goals.goals_met({cct=5600, duv=0.000, cri=95, r9=80}, g))
+    assert_true("CCT +150K pass", goals.goals_met({cct=5750, duv=0.000, cri=95, r9=80}, g))
+    assert_true("CCT -150K pass", goals.goals_met({cct=5450, duv=0.000, cri=95, r9=80}, g))
+    assert_false("CCT +151K fail", goals.goals_met({cct=5751, duv=0.000, cri=95, r9=80}, g))
+    assert_false("CCT -151K fail", goals.goals_met({cct=5449, duv=0.000, cri=95, r9=80}, g))
+    assert_true("Duv at tolerance pass", goals.goals_met({cct=5600, duv=0.010, cri=95, r9=80}, g))
+    assert_false("Duv over tolerance fail", goals.goals_met({cct=5600, duv=0.011, cri=95, r9=80}, g))
+    g.cri = {mode=goals.GOAL_MIN, value=90}
+    assert_true("CRI goal met", goals.goals_met({cct=5600, duv=0.000, cri=90, r9=80}, g))
+    assert_false("CRI goal below", goals.goals_met({cct=5600, duv=0.000, cri=89, r9=80}, g))
+    g.tlci = {mode=goals.GOAL_MIN, value=75}
+    assert_true("TLCI nil ignored when missing", goals.goals_met({cct=5600, duv=0.000, cri=95, r9=80, tlci=nil}, g))
+end
+
+section("goal_status_str")
+do
+    assert_equal("GOAL_SKIP empty", goals.goal_status_str(95, {mode=goals.GOAL_SKIP}), "")
+    assert_equal("GOAL_MAX maximize", goals.goal_status_str(95, {mode=goals.GOAL_MAX}), "  [maximize]")
+    assert_true("GOAL_MIN met contains GOAL MET", goals.goal_status_str(95, {mode=goals.GOAL_MIN, value=90}):find("GOAL MET") ~= nil)
 end
 
 --------------------------------------------------------------------------------

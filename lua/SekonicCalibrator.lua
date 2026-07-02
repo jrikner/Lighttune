@@ -10,27 +10,63 @@
 --   Sekonic C-7000 over network (Raspberry Pi bridge, auto-loop calibration,
 --   USB device auto-discovery and self-configuration).
 
+
+--------------------------------------------------------------------------------
+-- DOMAIN MODULE LOADER (Phase 2 — require + dofile fallback per D-23)
+--------------------------------------------------------------------------------
+
+local function load_domain_modules()
+    local plugin_dir
+    if GetPath and Enums then
+        local ok, dir = pcall(function()
+            return GetPath(Enums.PathType.PluginLibrary)
+        end)
+        if ok and dir then plugin_dir = dir end
+    end
+    if not plugin_dir then
+        plugin_dir = debug.getinfo(1, "S").source:match("^@(.+)[/\][^/\]+$")
+            or "."
+    end
+    package.path = plugin_dir .. "/lua/?.lua;" .. package.path
+
+    local function try_require(name)
+        local ok, mod = pcall(require, name)
+        if ok and type(mod) == "table" then return mod end
+        local chunk, err = loadfile(plugin_dir .. "/lua/" .. name .. ".lua")
+        if not chunk then error("module " .. name .. ": " .. tostring(err)) end
+        mod = chunk()
+        if type(mod) ~= "table" then error("module " .. name .. " must return a table") end
+        package.loaded[name] = mod
+        return mod
+    end
+
+    return {
+        color_math  = try_require("color_math"),
+        fixture_db  = try_require("fixture_db"),
+        goals       = try_require("goals"),
+    }
+end
+
+local domain = load_domain_modules()
+local color_math  = domain.color_math
+local fixture_db  = domain.fixture_db
+local goals       = domain.goals
+local QUALITY     = goals.QUALITY
+local GOAL_MAX    = goals.GOAL_MAX
+local GOAL_MIN    = goals.GOAL_MIN
+local GOAL_SKIP   = goals.GOAL_SKIP
+local CCT_MIN     = color_math.CCT_MIN
+local CCT_MAX     = color_math.CCT_MAX
+local DUV_MIN     = color_math.DUV_MIN
+local DUV_MAX     = color_math.DUV_MAX
+local GEL_STEPS   = color_math.GEL_STEPS
+
 --------------------------------------------------------------------------------
 -- SECTION 1: CONSTANTS
 --------------------------------------------------------------------------------
 
-local QUALITY = {
-    CRI  = { excellent = 95, good = 90, acceptable = 80 },
-    R9   = { excellent = 90, good = 80, acceptable = 50 },
-    TLCI = { excellent = 90, good = 75, acceptable = 50 },
-    DUV  = { excellent = 0.003, good = 0.006, acceptable = 0.010 },
-}
-
-local CCT_MIN = 1667
-local CCT_MAX = 25000
-local DUV_MIN = -0.02
-local DUV_MAX =  0.02
 local CRI_MIN =  0
 local CRI_MAX =  100
-
-local GOAL_MAX  = "max"
-local GOAL_MIN  = "min"
-local GOAL_SKIP = "skip"
 
 local MODE_TARGET    = "target"
 local MODE_REFERENCE = "reference"
@@ -38,350 +74,20 @@ local MODE_REFERENCE = "reference"
 local METER_C700  = "c700"   -- C-700 / C-800: no TLCI
 local METER_C7000 = "c7000"  -- C-7000: full, includes TLCI
 
-local GEL_STEPS = {
-    { threshold = 0.016, amount = "Full" },
-    { threshold = 0.010, amount = "1/2"  },
-    { threshold = 0.006, amount = "1/4"  },
-    { threshold = 0.003, amount = "1/8"  },
-}
 
 -- Unicode star used in history display to mark best values (★)
 local STAR = "\xe2\x98\x85"
 
 --------------------------------------------------------------------------------
--- SECTION 2: COLOR MATH (pure functions, no MA3 API)
---------------------------------------------------------------------------------
-
-local function cct_to_xy(T)
-    T = math.max(CCT_MIN, math.min(CCT_MAX, T))
-    local x, y
-    if T <= 4000 then
-        x = (-0.2661239e9 / T^3) + (-0.2343580e6 / T^2) + (0.8776956e3 / T) + 0.179910
-        y = (-1.1063814 * x^3) + (-1.34811020 * x^2) + (2.18555832 * x) - 0.20219683
-    else
-        x = (-3.0258469e9 / T^3) + (2.1070379e6 / T^2) + (0.2226347e3 / T) + 0.240390
-        y = (3.0817580 * x^3) + (-5.87338670 * x^2) + (3.75112997 * x) - 0.37001483
-    end
-    return x, y
-end
-
-local function xy_to_uvp(x, y)
-    local denom = -2 * x + 12 * y + 3
-    if denom == 0 then return 0, 0 end
-    return 4 * x / denom, 9 * y / denom
-end
-
-local function uvp_to_xy(up, vp)
-    local denom = 6 * up - 16 * vp + 12
-    if denom == 0 then return 0, 0 end
-    return 9 * up / denom, 4 * vp / denom
-end
-
-local function apply_duv_correction(x, y, measured_duv, target_duv)
-    local up, vp = xy_to_uvp(x, y)
-    vp = vp + (target_duv - measured_duv) * 1.5
-    return uvp_to_xy(up, vp)
-end
-
-local function get_correction(tgt_cct, tgt_duv, meas_cct, meas_duv)
-    local tx, ty = cct_to_xy(tgt_cct)
-    tx, ty = apply_duv_correction(tx, ty, 0, tgt_duv)
-    return {
-        target_x  = tx,
-        target_y  = ty,
-        delta_cct = tgt_cct - meas_cct,
-        delta_duv = tgt_duv - meas_duv,
-    }
-end
-
-local function xy_to_rgb(x, y)
-    if y == 0 then y = 0.0001 end
-    local X = x / y
-    local Y = 1.0
-    local Z = (1 - x - y) / y
-    local r_lin =  3.2404542 * X - 1.5371385 * Y - 0.4985314 * Z
-    local g_lin = -0.9692660 * X + 1.8760108 * Y + 0.0415560 * Z
-    local b_lin =  0.0556434 * X - 0.2040259 * Y + 1.0572252 * Z
-    r_lin = math.max(0, r_lin); g_lin = math.max(0, g_lin); b_lin = math.max(0, b_lin)
-    local max_c = math.max(r_lin, g_lin, b_lin)
-    if max_c > 0 then r_lin = r_lin/max_c; g_lin = g_lin/max_c; b_lin = b_lin/max_c end
-    return r_lin^(1/2.2), g_lin^(1/2.2), b_lin^(1/2.2)
-end
-
-local function rgb_to_hsb(r, g, b)
-    local max_c = math.max(r, g, b)
-    local min_c = math.min(r, g, b)
-    local delta = max_c - min_c
-    local bri = max_c
-    local s = (max_c == 0) and 0 or (delta / max_c)
-    local h
-    if delta == 0 then h = 0
-    elseif max_c == r then h = 60 * (((g-b)/delta) % 6)
-    elseif max_c == g then h = 60 * (((b-r)/delta) + 2)
-    else                   h = 60 * (((r-g)/delta) + 4)
-    end
-    if h < 0 then h = h + 360 end
-    return h, s, bri
-end
-
-local function rate_quality(value, thresholds)
-    if value >= thresholds.excellent  then return "Excellent"
-    elseif value >= thresholds.good   then return "Good"
-    elseif value >= thresholds.acceptable then return "Acceptable"
-    else return "Poor" end
-end
-
-local function rate_duv(duv)
-    local a = math.abs(duv)
-    if a <= QUALITY.DUV.excellent    then return "Excellent"
-    elseif a <= QUALITY.DUV.good     then return "Good"
-    elseif a <= QUALITY.DUV.acceptable then return "Acceptable"
-    else return "Poor" end
-end
-
-local function goal_status_str(measured_val, goal)
-    if not goal or goal.mode == GOAL_SKIP then return "" end
-    if goal.mode == GOAL_MAX then return "  [maximize]" end
-    if measured_val >= goal.value then
-        return string.format("  [GOAL MET \xe2\x89\xa5%d]", goal.value)
-    else
-        return string.format("  [BELOW GOAL – need %d, have %d]", goal.value, measured_val)
-    end
-end
-
--- Returns a gel hint string (amount + direction) or nil when not warranted.
-local function gel_hint(duv)
-    local abs_duv = math.abs(duv)
-    local amount = nil
-    for _, step in ipairs(GEL_STEPS) do
-        if abs_duv > step.threshold then amount = step.amount; break end
-    end
-    if not amount then return nil end
-    if duv > 0 then
-        return string.format("%s Minus Green  (Duv %+.4f, green shift)", amount, duv)
-    else
-        return string.format("%s Plus Green   (Duv %+.4f, magenta shift)", amount, duv)
-    end
-end
-
-local B64_CHARS  = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-local B64_LOOKUP = {}
-for i = 1, #B64_CHARS do B64_LOOKUP[B64_CHARS:sub(i,i)] = i-1 end
-
-local function base64_encode(data)
-    local result = {}
-    for i = 1, #data, 3 do
-        local a = data:byte(i) or 0
-        local b = data:byte(i+1) or 0
-        local c = data:byte(i+2) or 0
-        local n = (a<<16)|(b<<8)|c
-        result[#result+1] = B64_CHARS:sub(((n>>18)&63)+1, ((n>>18)&63)+1)
-        result[#result+1] = B64_CHARS:sub(((n>>12)&63)+1, ((n>>12)&63)+1)
-        result[#result+1] = B64_CHARS:sub(((n>>6) &63)+1, ((n>>6) &63)+1)
-        result[#result+1] = B64_CHARS:sub(( n      &63)+1, ( n     &63)+1)
-    end
-    local encoded = table.concat(result)
-    local pad = (3 - #data%3) % 3
-    return encoded:sub(1, #encoded-pad) .. ("="):rep(pad)
-end
-
-local function base64_decode(data)
-    data = data:gsub("[^%w%+%/%=]", "")
-    local result = {}
-    for i = 1, #data, 4 do
-        local a = B64_LOOKUP[data:sub(i,  i  )] or 0
-        local b = B64_LOOKUP[data:sub(i+1,i+1)] or 0
-        local c = B64_LOOKUP[data:sub(i+2,i+2)] or 0
-        local d = B64_LOOKUP[data:sub(i+3,i+3)] or 0
-        local n = (a<<18)|(b<<12)|(c<<6)|d
-        result[#result+1] = string.char((n>>16)&0xFF)
-        if data:sub(i+2,i+2) ~= "=" then result[#result+1] = string.char((n>>8)&0xFF) end
-        if data:sub(i+3,i+3) ~= "=" then result[#result+1] = string.char( n    &0xFF) end
-    end
-    return table.concat(result)
-end
-
---------------------------------------------------------------------------------
--- SECTION 2b: FIXTURE DATABASE – JSON HELPERS
---
--- Schema: flat append-only array. Every measurement is kept.
--- After any write, best_* flags are recomputed so the entry with the
--- best CRI / R9 / TLCI / |Duv| for each (make, model, kelvin) group
--- is marked with best_cri / best_r9 / best_tlci / best_duv = true.
--- The history viewer marks these with ★.
---------------------------------------------------------------------------------
-
--- JSON field extractors ---------------------------------------------------------
-
-local function json_get_str(json, key)
-    return json:match('"'..key..'"%s*:%s*"([^"]*)"')
-end
-
-local function json_get_num(json, key)
-    return tonumber(json:match('"'..key..'"%s*:%s*(-?%d+%.?%d*)'))
-end
-
--- Returns true if the key has value true, false otherwise.
-local function json_get_bool(json, key)
-    return json:find('"'..key..'"%s*:%s*true') ~= nil
-end
-
--- JSON encoders ----------------------------------------------------------------
-
-local function json_encode_db_record(rec)
-    local parts = {}
-    local function s(k,v) if v ~= nil then parts[#parts+1]='"'..k..'":"'..tostring(v):gsub('"','\\"')..'"' end end
-    local function n(k,v) if v ~= nil then parts[#parts+1]='"'..k..'":'..tostring(v) end end
-    local function f(k,v) if v ~= nil then parts[#parts+1]='"'..k..'":' ..string.format("%.4f",v) end end
-    local function b(k,v) if v       then parts[#parts+1]='"'..k..'":true' end end
-
-    s("make",        rec.make)
-    s("model",       rec.model)
-    n("kelvin",      rec.kelvin)
-    s("date",        rec.date)
-    s("contributor", rec.contributor)
-    n("cct",         rec.cct)
-    f("duv",         rec.duv)
-    n("cri",         rec.cri)
-    n("r9",          rec.r9)
-    if rec.tlci ~= nil then n("tlci", rec.tlci) end
-    b("best_cri",    rec.best_cri)
-    b("best_r9",     rec.best_r9)
-    b("best_tlci",   rec.best_tlci)
-    b("best_duv",    rec.best_duv)
-    return "{"..table.concat(parts,",").."}"
-end
-
-local function json_encode_db_array(records)
-    if #records == 0 then return "[]" end
-    local parts = {}
-    for _, rec in ipairs(records) do parts[#parts+1] = json_encode_db_record(rec) end
-    return "[\n"..table.concat(parts,",\n").."\n]"
-end
-
--- JSON parser ------------------------------------------------------------------
-
-local function json_parse_db_array(content)
-    if not content or content:match("^%s*%[%s*%]%s*$") then return {} end
-    local records = {}
-    for block in content:gmatch("%b{}") do
-        local make   = json_get_str(block, "make")
-        local model  = json_get_str(block, "model")
-        local kelvin = json_get_num(block, "kelvin")
-        if make and model and kelvin then
-            records[#records+1] = {
-                make        = make,
-                model       = model,
-                kelvin      = kelvin,
-                date        = json_get_str(block, "date"),
-                contributor = json_get_str(block, "contributor"),
-                cct         = json_get_num(block, "cct"),
-                duv         = json_get_num(block, "duv"),
-                cri         = json_get_num(block, "cri"),
-                r9          = json_get_num(block, "r9"),
-                tlci        = json_get_num(block, "tlci"),
-                best_cri    = json_get_bool(block, "best_cri"),
-                best_r9     = json_get_bool(block, "best_r9"),
-                best_tlci   = json_get_bool(block, "best_tlci"),
-                best_duv    = json_get_bool(block, "best_duv"),
-            }
-        end
-    end
-    return records
-end
-
--- best_* flag management -------------------------------------------------------
-
--- Recompute best_* flags in-place across all records.
--- For each (make, model, kelvin) group: mark the entry with the highest
--- CRI / R9 / TLCI (or lowest |duv|) with the corresponding best_* flag.
-local function recompute_best_flags(records)
-    -- Clear all flags
-    for _, rec in ipairs(records) do
-        rec.best_cri = nil; rec.best_r9 = nil; rec.best_tlci = nil; rec.best_duv = nil
-    end
-
-    -- Build index by group key
-    local groups = {}
-    for i, rec in ipairs(records) do
-        local key = (rec.make or "").."|||"..(rec.model or "").."|||"..tostring(rec.kelvin or 0)
-        if not groups[key] then groups[key] = {} end
-        groups[key][#groups[key]+1] = i
-    end
-
-    -- For each group find best indices
-    for _, idxs in pairs(groups) do
-        local bi_cri, bi_r9, bi_tlci, bi_duv = nil, nil, nil, nil
-        local bv_cri, bv_r9, bv_tlci, bv_duv = -math.huge, -math.huge, -math.huge, math.huge
-
-        for _, i in ipairs(idxs) do
-            local r = records[i]
-            if r.cri  and r.cri  > bv_cri  then bv_cri  = r.cri;  bi_cri  = i end
-            if r.r9   and r.r9   > bv_r9   then bv_r9   = r.r9;   bi_r9   = i end
-            if r.tlci and r.tlci > bv_tlci then bv_tlci = r.tlci; bi_tlci = i end
-            if r.duv  ~= nil and math.abs(r.duv) < bv_duv then
-                bv_duv = math.abs(r.duv); bi_duv = i
-            end
-        end
-
-        if bi_cri  then records[bi_cri ].best_cri  = true end
-        if bi_r9   then records[bi_r9  ].best_r9   = true end
-        if bi_tlci then records[bi_tlci].best_tlci = true end
-        if bi_duv  then records[bi_duv ].best_duv  = true end
-    end
-end
-
--- Append a new record; recompute flags; sort. Never removes existing data.
-local function append_fixture_record(records, entry)
-    records[#records+1] = {
-        make        = entry.make,
-        model       = entry.model,
-        kelvin      = entry.kelvin,
-        date        = entry.date        or os.date("%Y-%m-%d"),
-        contributor = entry.contributor or "local",
-        cct         = entry.cct,
-        duv         = entry.duv,
-        cri         = entry.cri,
-        r9          = entry.r9,
-        tlci        = entry.tlci,
-    }
-    recompute_best_flags(records)
-end
-
--- Sort records: make A→Z, model A→Z, kelvin low→high, date old→new.
-local function sort_fixture_records(records)
-    table.sort(records, function(a,b)
-        if a.make   ~= b.make   then return a.make   < b.make   end
-        if a.model  ~= b.model  then return a.model  < b.model  end
-        if a.kelvin ~= b.kelvin then return a.kelvin < b.kelvin end
-        return (a.date or "") < (b.date or "")
-    end)
-end
-
--- Return all records matching (make, model, kelvin) plus best-entry pointers.
--- Returns nil when no data exists for this fixture/kelvin.
-local function find_best_for_fixture(records, make, model, kelvin)
-    if not make or not model then return nil end
-    local result = { entries={}, best_cri=nil, best_r9=nil, best_tlci=nil, best_duv=nil }
-    for _, rec in ipairs(records) do
-        if rec.make == make and rec.model == model and rec.kelvin == kelvin then
-            result.entries[#result.entries+1] = rec
-            if rec.best_cri  then result.best_cri  = rec end
-            if rec.best_r9   then result.best_r9   = rec end
-            if rec.best_tlci then result.best_tlci = rec end
-            if rec.best_duv  then result.best_duv  = rec end
-        end
-    end
-    if #result.entries == 0 then return nil end
-    return result
-end
+-- SECTION 2: COLOR MATH → lua/color_math.lua
+-- SECTION 2b: FIXTURE DB → lua/fixture_db.lua
+-- goals → lua/goals.lua
 
 --------------------------------------------------------------------------------
 -- SECTION 3: UI HELPERS
 -- Forward declarations for bridge functions (defined in Section 2c, below).
 local _http_request
 local bridge_fetch_measurement
-local goals_met
 local run_bridge_setup
 local show_bridge_status
 local _run_trigger_discovery
@@ -546,7 +252,7 @@ local function get_session_goals(display)
         cct=ref_meas.cct; duv=ref_meas.duv
         MessageBox({ title="Reference Captured",
             message=string.format("Reference group: %s\n\n  CCT: %dK\n  Duv: %+.4f (%s)\n\nAll other groups will be matched to these values.",
-                ref_group, cct, duv, rate_duv(duv)),
+                ref_group, cct, duv, color_math.rate_duv(duv)),
             display_handle=display, buttons={"OK"} })
     else
         cct = get_number_input(display,"Target Color Temperature",
@@ -677,7 +383,7 @@ local function apply_historical_prefill(display, group, hist, goals)
     local ref = hist.best_duv or hist.entries[1]
     if not ref or not ref.cct or not ref.duv then return end
 
-    local correction = get_correction(goals.cct, goals.duv, ref.cct, ref.duv)
+    local correction = color_math.get_correction(goals.cct, goals.duv, ref.cct, ref.duv)
     -- calibrate_group is defined in Section 4 – call via pcall after it's defined
     -- (forward reference: we call it from main after all functions are defined)
     return correction.target_x, correction.target_y, ref.date
@@ -832,14 +538,14 @@ end
 -- caps (optional): GDTF capability table.
 -- Returns true = apply, false = skip.
 local function show_assessment(display, group, goals, measured, correction, attempt, caps)
-    local cri_rating  = rate_quality(measured.cri, QUALITY.CRI)
-    local r9_rating   = rate_quality(measured.r9,  QUALITY.R9)
-    local tlci_rating = measured.tlci and rate_quality(measured.tlci, QUALITY.TLCI) or "n/a"
-    local duv_rating  = rate_duv(measured.duv)
+    local cri_rating  = color_math.rate_quality(measured.cri, QUALITY.CRI)
+    local r9_rating   = color_math.rate_quality(measured.r9,  QUALITY.R9)
+    local tlci_rating = measured.tlci and color_math.rate_quality(measured.tlci, QUALITY.TLCI) or "n/a"
+    local duv_rating  = color_math.rate_duv(measured.duv)
 
-    local cri_gs  = goal_status_str(measured.cri,  goals.cri)
-    local r9_gs   = goal_status_str(measured.r9,   goals.r9)
-    local tlci_gs = measured.tlci and goal_status_str(measured.tlci, goals.tlci) or ""
+    local cri_gs  = goals.goal_status_str(measured.cri,  goals.cri)
+    local r9_gs   = goals.goal_status_str(measured.r9,   goals.r9)
+    local tlci_gs = measured.tlci and goals.goal_status_str(measured.tlci, goals.tlci) or ""
 
     -- Warnings
     local warns = {}
@@ -872,22 +578,22 @@ local function show_assessment(display, group, goals, measured, correction, atte
                 -- Fixture has gel/filter slots on its color wheel
                 local slot_dir = measured.duv>0 and "Minus Green" or "Plus Green"
                 hints[#hints+1]="  Color wheel: Use the "..slot_dir.." filter slot if available"
-                local gh = gel_hint(measured.duv)
+                local gh = color_math.gel_hint(measured.duv)
                 if gh then hints[#hints+1]="  Physical gel (if no matching slot): "..gh end
             else
                 -- No Tint, no filter wheel – physical gel is the only option
-                local gh = gel_hint(measured.duv)
+                local gh = color_math.gel_hint(measured.duv)
                 if gh then hints[#hints+1]="  Gel (no Tint channel/filter wheel available): "..gh end
             end
             -- Extreme deviation: even Tint may not be enough
             if extreme and caps.has_tint then
                 hints[#hints+1]="  Physical gel also required – Duv extreme, beyond Tint range"
-                local gh = gel_hint(measured.duv)
+                local gh = color_math.gel_hint(measured.duv)
                 if gh then hints[#hints+1]="  "..gh end
             end
         else
             -- No GDTF data: show gel hint as safe fallback
-            local gh = gel_hint(measured.duv)
+            local gh = color_math.gel_hint(measured.duv)
             if gh then hints[#hints+1]="  Physical gel: "..gh end
         end
     end
@@ -1037,7 +743,16 @@ local function show_fixture_history(display, data_dir)
 
     local records = {}
     local f = io.open(path,"r")
-    if f then records=json_parse_db_array(f:read("*a")); f:close() end
+    if f then
+        local content = f:read("*a"); f:close()
+        local skipped, errors
+        records, skipped, errors = fixture_db.json_parse_db_array(content)
+        if skipped and skipped > 0 then
+            MessageBox({ title="Fixture History", message=string.format(
+                "Warning: %d malformed record(s) skipped in fixture_log.json.", skipped),
+                display_handle=display, buttons={"OK"} })
+        end
+    end
 
     if #records==0 then
         MessageBox({ title="Fixture History", message="No fixture measurements logged yet.\n\nCalibrate some fixtures first.",
@@ -1208,19 +923,7 @@ local function bridge_check_status(config)  -- does not need forward decl (only 
     return true, connected, meter, dev_cfg, proto_cap, trigger_disc
 end
 
--- Check whether all session goals are met by the measurement.
--- CCT tolerance: ±150 K; Duv tolerance: ±QUALITY.DUV.acceptable from target.
-goals_met = function(measured, goals)
-    if math.abs(measured.cct - goals.cct) > 150 then return false end
-    if math.abs(measured.duv - goals.duv) > QUALITY.DUV.acceptable then return false end
-    if goals.cri  and goals.cri.mode  == GOAL_MIN
-       and measured.cri  < goals.cri.value  then return false end
-    if goals.r9   and goals.r9.mode   == GOAL_MIN
-       and measured.r9   < goals.r9.value   then return false end
-    if goals.tlci and goals.tlci.mode == GOAL_MIN
-       and measured.tlci and measured.tlci < goals.tlci.value then return false end
-    return true
-end
+-- goals.goals_met → lua/goals.lua
 
 -- Run POST /learn_trigger and show result. Used by setup wizard Step 3 and
 -- the "Discover Remote Trigger" button in show_bridge_status.
@@ -1626,7 +1329,7 @@ local function apply_color_xyY(x,y)
 end
 
 local function apply_color_hsb(x,y)
-    local r,g,b=xy_to_rgb(x,y); local h,s,_=rgb_to_hsb(r,g,b)
+    local r,g,b=color_math.xy_to_rgb(x,y); local h,s,_=color_math.rgb_to_hsb(r,g,b)
     local ok,err=pcall(function() SetColor("HSB",h,s,1.0,1.0,1.0,false) end)
     if not ok then return false,tostring(err) end
     return true,nil
@@ -1725,11 +1428,11 @@ local function save_fixture_log_local(db_entry)
         local path = get_data_dir() .. sep .. "fixture_log.json"
         local records = {}
         local rf = io.open(path, "r")
-        if rf then records = json_parse_db_array(rf:read("*a")); rf:close() end
-        append_fixture_record(records, db_entry)
-        sort_fixture_records(records)
+        if rf then records = select(1, fixture_db.json_parse_db_array(rf:read("*a"))); rf:close() end
+        fixture_db.append_fixture_record(records, db_entry)
+        fixture_db.sort_fixture_records(records)
         local wf = io.open(path, "w")
-        if wf then wf:write(json_encode_db_array(records)); wf:close() end
+        if wf then wf:write(fixture_db.json_encode_db_array(records)); wf:close() end
     end)
     return ok
 end
@@ -1793,7 +1496,7 @@ local function main(display, ...)
         do
             local sep = get_sep()
             local f = io.open(data_dir..sep.."fixture_log.json","r")
-            if f then fixture_records=json_parse_db_array(f:read("*a")); f:close() end
+            if f then fixture_records=select(1, fixture_db.json_parse_db_array(f:read("*a"))); f:close() end
         end
 
         -- ── Outer loop: group by group ────────────────────────────────────
@@ -1814,7 +1517,7 @@ local function main(display, ...)
 
             -- Look up historical data for pre-fill / pre-apply
             local hist = (fixture_make and fixture_model)
-                and find_best_for_fixture(fixture_records, fixture_make, fixture_model, goals.cct)
+                and fixture_db.find_best_for_fixture(fixture_records, fixture_make, fixture_model, goals.cct)
                 or nil
 
             -- Pre-apply best known correction before first measurement
@@ -1914,7 +1617,7 @@ local function main(display, ...)
                 if not measured then loop_done = true; break end
                 last_measured = measured
 
-                local correction = get_correction(
+                local correction = color_math.get_correction(
                     goals.cct, goals.duv, measured.cct, measured.duv)
                 last_correction = correction
 
@@ -1922,7 +1625,7 @@ local function main(display, ...)
                 if bridge_active and not user_manual then
                     loop_count = loop_count + 1
 
-                    if goals_met(measured, goals) then
+                    if goals.goals_met(measured, goals) then
                         -- All goals achieved – show success and finish this group
                         MessageBox({
                             title   = string.format("Goals Met \xe2\x80\x93 Group %s", group),
@@ -2016,7 +1719,7 @@ local function main(display, ...)
 
                 -- Keep in-memory records current for subsequent groups
                 if fixture_make and fixture_model then
-                    append_fixture_record(fixture_records, db_entry)
+                    fixture_db.append_fixture_record(fixture_records, db_entry)
                 end
 
                 table.insert(session_log, {
