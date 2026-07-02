@@ -330,11 +330,19 @@ previously recorded measurements without starting a calibration session.
 
 ## Running the Unit Tests
 
+Primary host test entry point:
+
+```bash
+lua5.4 tests/run.lua
+```
+
+Backward-compatible alias (delegates to `tests/run.lua`):
+
 ```bash
 lua5.4 test_color_math.lua
 ```
 
-Expected: `126 passed, 0 failed`
+Expected: **133+ passed, 0 failed** (ROADMAP minimum: 126+).
 
 ---
 
