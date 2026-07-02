@@ -4,15 +4,15 @@ milestone: v0.4
 milestone_name: milestone
 current_phase: 3
 current_phase_name: Shared Test Strategy & CI
-status: ready_for_planning
-stopped_at: Phase 2 execution complete
-last_updated: "2026-07-02T00:30:00.000Z"
+status: ready_to_execute
+stopped_at: Phase 3 planned
+last_updated: "2026-07-02T01:00:00.000Z"
 last_activity: 2026-07-02
-last_activity_desc: Phase 2 executed on claude/lighttune-main (3/3 plans)
+last_activity_desc: Phase 3 planned via /gsd-plan-phase 3 (3 plans, 3 waves)
 progress:
   total_phases: 7
   completed_phases: 2
-  total_plans: 6
+  total_plans: 9
   completed_plans: 6
   percent: 29
 ---
@@ -21,59 +21,31 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-07-01)
-
-**Core value:** An operator at FOH can calibrate a fixture group in under five minutes with minimal manual typing, while hitting broadcast-grade color targets (CCT, Duv, CRI, R9, TLCI).
+**Core value:** FOH calibration in under five minutes with broadcast-grade targets.
 **Current focus:** Phase 3 — Shared Test Strategy & CI
 
 ## Current Position
 
 Phase: 3 of 7 (Shared Test Strategy & CI)
-Plan: Not started
-Status: Ready for planning (`/gsd-plan-phase 3`)
-Last activity: 2026-07-02 — Phase 2 executed (domain trio on main @ 8353f0a)
+Plan: 0 of 3 (03-01 next)
+Status: Ready to execute (`/gsd-execute-phase 3`)
+Last activity: 2026-07-02 — Phase 3 planned (RESEARCH + 3 PLAN files)
 
 Progress: [████░░░░░░] 29%
 
-## Performance Metrics
-
-**Velocity:**
-
-- Total plans completed: 6 (Phases 1–2)
-- Average duration: —
-- Total execution time: —
-
-**By Phase:**
-
-| Phase | Plans | Total | Avg/Plan |
-|-------|-------|-------|----------|
-| 1. Canonical Merge & Baseline | 3 | 3 | — |
-| 2. Plugin Hardening & Test Seams | 3 | 3 | — |
-
-**Recent Trend:**
-
-- Last 5 plans: 01-03, 02-01, 02-02, 02-03
-- Trend: Phase 2 domain extract complete; 133 host tests green
-
 ## Accumulated Context
 
-### Decisions
+### Phase 3 locked decisions
 
-- Phase 2 complete: `color_math.lua`, `fixture_db.lua`, `goals.lua` on main
-- Single plugin entry preserved; require+dofile loader
-- Fixture DB JSON hardened; bridge JSON deferred Phase 5
-- Entry file 1749 lines (297 net reduction from 2046)
+- `tests/run.lua` + split `tests/test_*.lua`; root wrapper for backward compat
+- 133+ PASS regression floor; pytest+httpx for bridge; mock only in CI
+- Golden fixtures in `tests/fixtures/`; `/status`, `/measure`, `/discover` only
+- GitHub Actions on `claude/lighttune-main` and `cursor/**`
 
 ### Pending Todos
 
-- Run `/gsd-plan-phase 3` for CI and unified test runner
-
-### Blockers/Concerns
-
-- MA3 `require` on physical console unverified — dofile fallback in place; Phase 7 UAT
+- Run `/gsd-execute-phase 3` on `claude/lighttune-main`
 
 ## Session Continuity
 
-Last session: 2026-07-02
-Stopped at: Phase 2 complete — ready for `/gsd-plan-phase 3`
-Resume file: .planning/phases/02-plugin-hardening-test-seams/02-03-SUMMARY.md
+Resume file: `.planning/phases/03-shared-test-strategy-ci/03-01-PLAN.md`

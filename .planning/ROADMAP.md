@@ -89,7 +89,20 @@ Plans:
   3. Golden JSON fixtures cover bridge MeasurementRecord responses and fixture DB edge cases
   4. CI workflow on push runs host Lua tests and bridge pytest and reports pass/fail
 
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+**Wave 1**
+
+- [ ] 03-01-PLAN.md — tests/run.lua + split host tests + root wrapper (TST-01)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 03-02-PLAN.md — Golden fixtures + bridge pytest mock routes (TST-02, TST-03)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 03-03-PLAN.md — GitHub Actions CI workflow (TST-04)
 
 ### Phase 4: Thin Bridge (Pi/Arduino)
 
