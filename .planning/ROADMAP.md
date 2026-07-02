@@ -143,11 +143,22 @@ Plans:
   3. After successful remote measure, auto-loop runs up to 3 apply/measure cycles using `goals_met()` with operator exit at any point
   4. Bridge Status and setup wizard (discover + test measure) are reachable from the plugin main menu — **all setup UX on console**, not on Pi
 
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+**Wave 1**
+
+- [ ] 05-01-PLAN.md — Extract bridge_client.lua + domain loader (ARCH-04, MTR-03)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 05-02-PLAN.md — Wire monolith, error UX, C-7000 gate, Bridge Status (MTR-03, MTR-04, MTR-06)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 05-03-PLAN.md — Auto-loop verify + Lua tests + validation (MTR-05)
 
 **UI hint**: yes
-
-**Research flag**: Confirm LuaSocket availability, timeout values, and blocking UI behavior on physical MA3 console.
 
 ### Phase 6: Operator UX, Docs & Show Readiness
 
