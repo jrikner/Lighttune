@@ -86,7 +86,71 @@ manually if you want to contribute fixture data to others.
 
 3. Assign to a macro key or executor, then run by double-tapping the plugin entry.
 
-4. **Optional — remote C-7000:** Deploy `sekonic-bridge/` to a Raspberry Pi (see `sekonic-bridge/README.md`), then create `config.json` at the **plugin root** with `bridge_ip` and `bridge_port`.
+4. **Remote C-7000 (recommended on macOS):** Run `sekonic-bridge` on the **same Mac** as onPC with the C-7000 on USB — set `bridge_ip: "127.0.0.1"` (see [macOS setup](#deployment--macos--onpc-primary) below). **Stage-split:** deploy to a Raspberry Pi when console and meter are on different machines (`sekonic-bridge/README.md`).
+
+---
+
+## Deployment — macOS + onPC (primary)
+
+**Default path:** one Mac runs GrandMA3 onPC, `sekonic-bridge`, and the C-7000 USB port. No Pi required.
+
+```text
+[C-7000] ──USB──► [Mac: sekonic-bridge :8765]
+                        ▲ HTTP 127.0.0.1
+                        │
+              [GrandMA3 onPC — same Mac]
+```
+
+### 1. Install bridge dependencies (Mac)
+
+```bash
+brew install libusb
+cd sekonic-bridge
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python -c "import usb.core; print('pyusb OK')"
+```
+
+If pyusb reports **No backend available** on Apple Silicon, use Homebrew Python and try:
+
+```bash
+export DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib
+```
+
+### 2. Start the bridge
+
+**Mock (no hardware):**
+
+```bash
+python server.py --mock --host 127.0.0.1 --port 8765
+```
+
+**Real C-7000:** plug in USB, then:
+
+```bash
+python server.py --host 127.0.0.1 --port 8765
+```
+
+Verify:
+
+```bash
+curl -s http://127.0.0.1:8765/status
+```
+
+### 3. Plugin config
+
+Copy `data/config.json.example` to **`config.json` at the plugin root** (same folder as `plugin.xml`):
+
+```json
+{
+  "github_username": "your_github_username",
+  "bridge_ip":       "127.0.0.1",
+  "bridge_port":     8765
+}
+```
+
+In onPC: open the plugin → **Bridge Status** — connection should show OK.
 
 ---
 
@@ -98,7 +162,7 @@ directory as `plugin.xml`, **not** inside `data/`):
 ```json
 {
   "github_username": "your_github_username",
-  "bridge_ip":       "192.168.1.50",
+  "bridge_ip":       "127.0.0.1",
   "bridge_port":     8765
 }
 ```
@@ -106,7 +170,7 @@ directory as `plugin.xml`, **not** inside `data/`):
 | Field | Purpose |
 |---|---|
 | `github_username` | Stored as `contributor` in `data/fixture_log.json` (optional) |
-| `bridge_ip` | Pi bridge IP on show LAN — enables remote measure and auto-loop when set |
+| `bridge_ip` | Bridge address — **`127.0.0.1`** when bridge runs on the same Mac as onPC; Pi IP for stage-split |
 | `bridge_port` | Bridge HTTP port (default **8765** if omitted) |
 
 `config.json` is gitignored and must never contain secrets committed to git.
@@ -117,23 +181,25 @@ Runtime data paths stay under `data/`:
 
 ---
 
-## Remote Measurement (C-7000 + Pi Bridge)
+## Remote Measurement (C-7000 + bridge)
 
 When `bridge_ip` is configured:
 
 1. Open the plugin → **Bridge Status** to verify connection
 2. During calibration, choose **remote measure** when prompted (manual entry always available)
-3. The plugin calls the Pi over **HTTP/1.0 (LuaSocket TCP)** — no HTTPS on GrandMA3
+3. The plugin calls the bridge over **HTTP/1.0 (LuaSocket TCP)** — no HTTPS on GrandMA3
 4. On failure: retry remote, enter values manually, or cancel
 
-**Bridge setup commands** (`curl`, USB discovery) run on the **Pi terminal**, not on the GrandMA3 console. Example from the Pi:
+**macOS localhost:** bridge and onPC on the same Mac — use `127.0.0.1`.
+
+**Stage-split (Pi):** bridge on show LAN; setup commands (`curl`, USB) run on the machine that owns the USB port:
 
 ```bash
-curl http://localhost:8765/status
-curl -X POST http://localhost:8765/measure
+curl http://127.0.0.1:8765/status
+curl -X POST http://127.0.0.1:8765/measure
 ```
 
-See `sekonic-bridge/README.md` for Pi deployment, mock mode (`--mock`), and USB setup.
+See `sekonic-bridge/README.md` for Pi VLAN deployment, mock mode (`--mock`), and USB setup.
 
 ---
 

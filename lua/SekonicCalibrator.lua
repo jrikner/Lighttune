@@ -45,18 +45,23 @@ local function load_domain_modules()
         fixture_db     = try_require("fixture_db"),
         goals          = try_require("goals"),
         bridge_client  = try_require("bridge_client"),
+        patch_api      = try_require("patch_api"),
+        fixture_apply  = try_require("fixture_apply"),
     }
 end
 
 local domain = load_domain_modules()
 local color_math     = domain.color_math
 local fixture_db     = domain.fixture_db
-local goals          = domain.goals
+local goal_eval      = domain.goals
 local bridge_client  = domain.bridge_client
-local QUALITY     = goals.QUALITY
-local GOAL_MAX    = goals.GOAL_MAX
-local GOAL_MIN    = goals.GOAL_MIN
-local GOAL_SKIP   = goals.GOAL_SKIP
+local config_mod     = domain.config
+local patch_api      = domain.patch_api
+local fixture_apply  = domain.fixture_apply
+local QUALITY     = goal_eval.QUALITY
+local GOAL_MAX    = goal_eval.GOAL_MAX
+local GOAL_MIN    = goal_eval.GOAL_MIN
+local GOAL_SKIP   = goal_eval.GOAL_SKIP
 local CCT_MIN     = color_math.CCT_MIN
 local CCT_MAX     = color_math.CCT_MAX
 local DUV_MIN     = color_math.DUV_MIN
@@ -304,37 +309,11 @@ local function get_group_input(display)
     return nil
 end
 
--- Attempt to read fixture manufacturer and model from the MA3 patch.
-local function get_fixture_from_patch(group_name)
-    local make, model = nil, nil
-    pcall(function()
-        local dp = DataPool(); if not dp then return end
-        local groups = dp.Groups; if not groups then return end
-        local grp = nil
-        local num = tonumber(group_name)
-        if num then grp = groups:Child(num-1) end
-        if not grp then
-            for i=0, groups:Count()-1 do
-                local g = groups:Child(i)
-                if g and g.Name==group_name then grp=g; break end
-            end
-        end
-        if not grp then return end
-        local members = grp.Members
-        if not members or members:Count()==0 then return end
-        local fixture = members:Child(0); if not fixture then return end
-        local ft = fixture.FixtureType; if not ft then return end
-        local m = ft.Manufacturer; local n = ft.Long or ft.Name
-        if m and m~="" then make=m end
-        if n and n~="" then model=n end
-    end)
-    return make, model
-end
+-- Attempt to read fixture manufacturer and model from the MA3 patch (patch_api.lua).
 
 -- Prompt for fixture make+model. Tries patch first, manual entry fallback.
--- Returns make, model or nil, nil.
 local function get_fixture_model_input(display, group_name)
-    local patch_make, patch_model = get_fixture_from_patch(group_name)
+    local patch_make, patch_model = patch_api.get_fixture_from_patch(group_name)
 
     if patch_make and patch_model then
         local r = MessageBox({ title="Fixture Identified",
@@ -364,7 +343,7 @@ end
 
 -- Show prior data and offer to pre-apply the best known correction.
 -- Called before the first measurement of a group when hist ~= nil.
-local function apply_historical_prefill(display, group, hist, goals)
+local function apply_historical_prefill(display, group, hist, session_goals)
     local lines = {}
     if hist.best_cri  then lines[#lines+1]=string.format("  CRI:  %d  (%s)",  hist.best_cri.cri,  hist.best_cri.date  or "?") end
     if hist.best_r9   then lines[#lines+1]=string.format("  R9:   %d  (%s)",  hist.best_r9.r9,    hist.best_r9.date   or "?") end
@@ -376,7 +355,7 @@ local function apply_historical_prefill(display, group, hist, goals)
             "Prior measurements found for this fixture @ %dK:\n\n%s\n\n"
             .."Pre-apply the best known correction now?\n"
             .."(Fixture will be set close to target before you measure.)",
-            goals.cct, table.concat(lines,"\n")),
+            session_goals.cct, table.concat(lines,"\n")),
         display_handle=display,
         buttons={"Yes – Pre-apply","No – Measure cold"} })
     if r~=1 then return end
@@ -385,7 +364,7 @@ local function apply_historical_prefill(display, group, hist, goals)
     local ref = hist.best_duv or hist.entries[1]
     if not ref or not ref.cct or not ref.duv then return end
 
-    local correction = color_math.get_correction(goals.cct, goals.duv, ref.cct, ref.duv)
+    local correction = color_math.get_correction(session_goals.cct, session_goals.duv, ref.cct, ref.duv)
     -- calibrate_group is defined in Section 4 – call via pcall after it's defined
     -- (forward reference: we call it from main after all functions are defined)
     return correction.target_x, correction.target_y, ref.date
@@ -395,14 +374,14 @@ end
 -- prior best values are shown as context in each prompt.
 -- When config contains bridge_ip the operator can trigger a remote measurement.
 -- Returns: measured table (or nil on cancel), used_bridge (bool).
-local function get_measurement_params(display, attempt, goals, hist, config)
+local function get_measurement_params(display, attempt, session_goals, hist, config)
     local suffix     = attempt>1 and string.format(" (attempt %d)", attempt) or ""
-    local track_tlci = goals.tlci and goals.tlci.mode~=GOAL_SKIP
-    local meter_name = (goals.meter==METER_C700) and "C-700/C-800" or "C-7000"
+    local track_tlci = session_goals.tlci and session_goals.tlci.mode~=GOAL_SKIP
+    local meter_name = (session_goals.meter==METER_C700) and "C-700/C-800" or "C-7000"
 
     -- ── Remote bridge mode (C-7000 session meter only — D-91) ───────────────
     if config and config.bridge_ip and config.bridge_ip ~= ""
-       and goals.meter == METER_C7000 then
+       and session_goals.meter == METER_C7000 then
         ::bridge_retry::
         local mode = MessageBox({
             title   = "Measurement" .. suffix,
@@ -463,7 +442,7 @@ local function get_measurement_params(display, attempt, goals, hist, config)
         end
         -- mode == 2 or bridge fallback → continue to manual entry
     elseif config and config.bridge_ip and config.bridge_ip ~= ""
-       and goals.meter == METER_C700 and attempt == 1 then
+       and session_goals.meter == METER_C700 and attempt == 1 then
         -- D-92: bridge configured but C-700/C-800 session — manual only
     end
     -- ── Manual entry ──────────────────────────────────────────────────────────
@@ -490,9 +469,9 @@ local function get_measurement_params(display, attempt, goals, hist, config)
         DUV_MIN, DUV_MAX)
     if not duv then return nil end
 
-    -- Show GDTF-rated CRI as context if available (passed via goals.gdtf_cri)
-    local gdtf_cri_hint = (attempt==1 and goals.gdtf_cri)
-        and string.format("\n  Manufacturer rated: %d", goals.gdtf_cri) or ""
+    -- Show GDTF-rated CRI as context if available (passed via session_goals.gdtf_cri)
+    local gdtf_cri_hint = (attempt==1 and session_goals.gdtf_cri)
+        and string.format("\n  Manufacturer rated: %d", session_goals.gdtf_cri) or ""
 
     local cri = get_number_input(display,"Measured CRI (Ra)"..suffix,
         string.format("CRI (Ra) from Sekonic %s.\nRange: %d – %d%s%s",
@@ -524,34 +503,34 @@ local function get_measurement_params(display, attempt, goals, hist, config)
     return { cct=cct, duv=duv, cri=cri, r9=r9, tlci=tlci }, false
 end
 
-local function goals_summary_line(goals)
-    local parts = { string.format("%dK", goals.cct) }
-    if goals.duv~=0 then parts[#parts+1]=string.format("Duv%+.3f", goals.duv) end
+local function goals_summary_line(session_goals)
+    local parts = { string.format("%dK", session_goals.cct) }
+    if session_goals.duv~=0 then parts[#parts+1]=string.format("Duv%+.3f", session_goals.duv) end
     local function ms(label, goal)
         if not goal or goal.mode==GOAL_SKIP then return nil end
         if goal.mode==GOAL_MAX then return label..":max" end
         return string.format("%s:\xe2\x89\xa5%d", label, goal.value)
     end
-    local s = ms("CRI",goals.cri);  if s then parts[#parts+1]=s end
-    local s2= ms("R9", goals.r9);   if s2 then parts[#parts+1]=s2 end
-    local s3= ms("TLCI",goals.tlci);if s3 then parts[#parts+1]=s3 end
-    local prefix = goals.mode==MODE_REFERENCE
-        and string.format("Ref: %s  |  ", goals.ref_group) or ""
+    local s = ms("CRI",session_goals.cri);  if s then parts[#parts+1]=s end
+    local s2= ms("R9", session_goals.r9);   if s2 then parts[#parts+1]=s2 end
+    local s3= ms("TLCI",session_goals.tlci);if s3 then parts[#parts+1]=s3 end
+    local prefix = session_goals.mode==MODE_REFERENCE
+        and string.format("Ref: %s  |  ", session_goals.ref_group) or ""
     return prefix.."Goals: "..table.concat(parts,"  ")
 end
 
 -- Show quality assessment and correction summary.
 -- caps (optional): GDTF capability table.
 -- Returns true = apply, false = skip.
-local function show_assessment(display, group, goals, measured, correction, attempt, caps)
+local function show_assessment(display, group, session_goals, measured, correction, attempt, caps)
     local cri_rating  = color_math.rate_quality(measured.cri, QUALITY.CRI)
     local r9_rating   = color_math.rate_quality(measured.r9,  QUALITY.R9)
     local tlci_rating = measured.tlci and color_math.rate_quality(measured.tlci, QUALITY.TLCI) or "n/a"
     local duv_rating  = color_math.rate_duv(measured.duv)
 
-    local cri_gs  = goals.goal_status_str(measured.cri,  goals.cri)
-    local r9_gs   = goals.goal_status_str(measured.r9,   goals.r9)
-    local tlci_gs = measured.tlci and goals.goal_status_str(measured.tlci, goals.tlci) or ""
+    local cri_gs  = goal_eval.goal_status_str(measured.cri,  session_goals.cri)
+    local r9_gs   = goal_eval.goal_status_str(measured.r9,   session_goals.r9)
+    local tlci_gs = measured.tlci and goal_eval.goal_status_str(measured.tlci, session_goals.tlci) or ""
 
     -- Warnings
     local warns = {}
@@ -653,14 +632,14 @@ local function show_assessment(display, group, goals, measured, correction, atte
      .."  \xce\x94 Kelvin  :  %s\n"
      .."  \xce\x94 Duv     :  %s\n"
      .."%s\nApply correction to Group %s?",
-        group, attempt, goals_summary_line(goals),
+        group, attempt, goals_summary_line(session_goals),
         measured.cri, cri_rating, cri_gs,
         measured.r9,  r9_rating,  r9_gs,
         tlci_row,
         measured.duv, duv_rating,
         warns_str,
         measured.cct, measured.duv,
-        goals.cct, goals.duv,
+        session_goals.cct, session_goals.duv,
         dkcct_s, dkduv_s,
         hints_str, group)
 
@@ -698,11 +677,11 @@ local function ask_calibrate_another(display)
     return r==1
 end
 
-local function show_session_summary(display, session_log, goals)
+local function show_session_summary(display, session_log, session_goals)
     if #session_log==0 then return end
     local lines = {
         string.format("== Session Summary  (%d group%s) ==\n", #session_log, #session_log==1 and "" or "s"),
-        goals_summary_line(goals).."\n",
+        goals_summary_line(session_goals).."\n",
     }
     for _, entry in ipairs(session_log) do
         local m   = entry.measured
@@ -716,11 +695,11 @@ local function show_session_summary(display, session_log, goals)
             if goal.mode==GOAL_MIN and val<goal.value then fails[#fails+1]=label end
         end
         if m then
-            chk("CRI",m.cri,goals.cri); chk("R9",m.r9,goals.r9)
-            if m.tlci then chk("TLCI",m.tlci,goals.tlci) end
+            chk("CRI",m.cri,session_goals.cri); chk("R9",m.r9,session_goals.r9)
+            if m.tlci then chk("TLCI",m.tlci,session_goals.tlci) end
         end
         local status = #fails==0 and "OK" or ("Below goal: "..table.concat(fails,", "))
-        if goals.cri.mode==GOAL_SKIP and goals.r9.mode==GOAL_SKIP and goals.tlci.mode==GOAL_SKIP then
+        if session_goals.cri.mode==GOAL_SKIP and session_goals.r9.mode==GOAL_SKIP and session_goals.tlci.mode==GOAL_SKIP then
             status="goals skipped" end
 
         local metrics=""
@@ -1204,129 +1183,8 @@ end
 -- since a fixture with a colour wheel very likely has correction filter slots.
 --------------------------------------------------------------------------------
 
--- Read fixture colour capabilities from the MA3 Patch API.
--- group_name: the group number or name string used to locate the fixture.
--- Returns a capabilities table, or nil when the Patch API is inaccessible or
--- the fixture type carries no colour attribute information.
-local function read_capabilities_from_patch(group_name)
-    if not group_name then return nil end
-    local caps = {
-        has_tint               = false,
-        has_ctb                = false,
-        has_cto                = false,
-        has_rgb                = false,
-        has_color_wheel        = false,
-        has_color_wheel_filters = false,
-        gdtf_cri               = nil,
-        gdtf_cct               = nil,
-    }
-    local found_any = false
-
-    pcall(function()
-        -- Locate the group in the DataPool ─────────────────────────────────
-        local dp = DataPool(); if not dp then return end
-        local groups = dp.Groups; if not groups then return end
-        local grp = nil
-        local num = tonumber(group_name)
-        if num then grp = groups:Child(num-1) end
-        if not grp then
-            for i = 0, groups:Count()-1 do
-                local g = groups:Child(i)
-                if g and g.Name == group_name then grp = g; break end
-            end
-        end
-        if not grp then return end
-
-        local members = grp.Members
-        if not members or members:Count() == 0 then return end
-        local fixture = members:Child(0); if not fixture then return end
-        local ft = fixture.FixtureType;   if not ft      then return end
-
-        -- Manufacturer-rated CRI / CCT may be properties on FixtureType ────
-        pcall(function()
-            local cri = tonumber(ft.CRI or ft.Cri)
-            if cri then caps.gdtf_cri = cri; found_any = true end
-        end)
-        pcall(function()
-            local cct = tonumber(ft.NominalColorTemperature or ft.ColorTemperature)
-            if cct then caps.gdtf_cct = cct; found_any = true end
-        end)
-
-        -- Traverse DMXModes → Default → DMXChannels → LogicalChannels ──────
-        -- GrandMA3 already has all GDTF DMX attribute data in memory.
-        local modes = ft.DMXModes; if not modes then return end
-        local mode  = nil
-        pcall(function() mode = modes.Default end)  -- GDTF default mode name
-        if not mode then pcall(function() mode = modes:Child(0) end) end
-        if not mode then return end
-
-        local dch = mode.DMXChannels; if not dch then return end
-        local ch_count = 0
-        pcall(function() ch_count = dch:Count() end)
-
-        for i = 0, math.max(ch_count - 1, 99) do
-            local ch = dch:Child(i); if not ch then break end
-            pcall(function()
-                local lcs = ch.LogicalChannels; if not lcs then return end
-                local lc  = lcs:Child(0);        if not lc  then return end
-                -- GDTF Attribute name is on the LogicalChannel
-                local attr = tostring(lc.Attribute or lc.name or "")
-                if attr == "" then return end
-                found_any = true
-                if attr == "Tint"   then caps.has_tint = true end
-                if attr == "CTO"    then caps.has_cto  = true end
-                if attr == "CTB"    then caps.has_ctb  = true end
-                if attr:find("^ColorAdd_") or attr:find("^ColorSub_") then
-                    caps.has_rgb = true
-                end
-                if attr == "ColorWheel" or attr:find("[Cc]olor[Ww]heel") then
-                    caps.has_color_wheel        = true
-                    caps.has_color_wheel_filters = true  -- assume correction slots exist
-                end
-            end)
-        end
-    end)
-
-    if not found_any then return nil end
-    return caps
-end
-
---------------------------------------------------------------------------------
--- SECTION 4: FIXTURE APPLICATION
---------------------------------------------------------------------------------
-
-local function select_group(group)
-    local ok,err=pcall(function() Cmd('Group "'..tostring(group)..'"') end)
-    if not ok then
-        local ok2,err2=pcall(function() Cmd("Group "..tostring(group)) end)
-        if not ok2 then return false,tostring(err2) end
-    end
-    return true,nil
-end
-
-local function apply_color_xyY(x,y)
-    local ok,err=pcall(function() SetColor("xyY",x,y,1.0,1.0,1.0,false) end)
-    if not ok then return false,tostring(err) end
-    return true,nil
-end
-
-local function apply_color_hsb(x,y)
-    local r,g,b=color_math.xy_to_rgb(x,y); local h,s,_=color_math.rgb_to_hsb(r,g,b)
-    local ok,err=pcall(function() SetColor("HSB",h,s,1.0,1.0,1.0,false) end)
-    if not ok then return false,tostring(err) end
-    return true,nil
-end
-
-local function calibrate_group(group,x,y)
-    local sel_ok,sel_err=select_group(group)
-    if not sel_ok then return {success=false,method="none",error_msg=sel_err} end
-    local xy_ok,xy_err=apply_color_xyY(x,y)
-    if xy_ok then return {success=true,method="xyY (precision)",error_msg=nil} end
-    local hsb_ok,hsb_err=apply_color_hsb(x,y)
-    if hsb_ok then return {success=true,method="HSB (approx)",error_msg=nil} end
-    return {success=false,method="none",
-        error_msg=string.format("xyY: %s | HSB: %s",xy_err,hsb_err)}
-end
+-- Patch capabilities: patch_api.lua (Phase 6)
+-- Fixture apply: fixture_apply.lua (Phase 6)
 
 --------------------------------------------------------------------------------
 -- SECTION 5: DATA LOGGING
@@ -1342,66 +1200,21 @@ end
 -- plugin package). No runtime directory creation is performed.
 --------------------------------------------------------------------------------
 
--- Returns the OS path separator using the GrandMA3 GetPathSeparator() API.
+-- Path/config helpers delegate to config.lua (Phase 6 D-105).
 local function get_sep()
-    local sep = "/"
-    pcall(function() sep = GetPathSeparator() end)
-    return sep
+    return config_mod.get_sep()
 end
 
--- Returns the path to the SekonicCalibrator plugin root directory.
--- Uses GetPath(Enums.PathType.PluginLibrary) when available;
--- falls back to a HostOS-based path if the API is unavailable.
 local function get_plugin_dir()
-    local sep = get_sep()
-    local base = nil
-    pcall(function() base = GetPath(Enums.PathType.PluginLibrary) end)
-    if base and base ~= "" then
-        return base .. sep .. "SekonicCalibrator"
-    end
-    -- Fallback: construct path from HostOS
-    local host = "Linux"
-    pcall(function() host = HostOS() end)
-    if host == "Windows" then
-        sep = "\\"
-        local appdata = (os.getenv and os.getenv("APPDATA"))
-                     or "C:\\Users\\Default\\AppData\\Roaming"
-        return appdata .. sep .. "MALightingTechnology" .. sep
-            .. "gma3_library" .. sep .. "datapools" .. sep
-            .. "plugins" .. sep .. "SekonicCalibrator"
-    else
-        local home = (os.getenv and os.getenv("HOME")) or "/root"
-        return home .. sep .. "MALightingTechnology" .. sep
-            .. "gma3_library" .. sep .. "datapools" .. sep
-            .. "plugins" .. sep .. "SekonicCalibrator"
-    end
+    return config_mod.get_plugin_dir()
 end
 
--- Returns the path to the data directory (plugin_dir/data).
 local function get_data_dir()
-    local dir = get_plugin_dir()
-    if not dir then return nil end
-    return dir .. get_sep() .. "data"
+    return config_mod.get_data_dir()
 end
 
--- Read config.json. Returns config table or nil.
--- Supported fields: github_username, bridge_ip, bridge_port, bridge_api_key.
 local function load_config()
-    local dir = get_plugin_dir()
-    if not dir then return nil end
-    local path = dir .. get_sep() .. "config.json"
-    local f = io.open(path, "r"); if not f then return nil end
-    local content = f:read("*a"); f:close()
-    local username       = content:match('"github_username"%s*:%s*"([^"]+)"')
-    local bridge_ip      = content:match('"bridge_ip"%s*:%s*"([^"]+)"')
-    local bridge_port    = tonumber(content:match('"bridge_port"%s*:%s*(%d+)'))
-    local bridge_api_key = content:match('"bridge_api_key"%s*:%s*"([^"]*)"')
-    return {
-        github_username = username,
-        bridge_ip       = bridge_ip,
-        bridge_port     = bridge_port or 8765,
-        bridge_api_key  = bridge_api_key,
-    }
+    return config_mod.load_config()
 end
 
 -- Append db_entry to local fixture_log.json using the append-only schema.
@@ -1470,8 +1283,8 @@ local function main(display, ...)
         end
 
         -- ── Calibration ───────────────────────────────────────────────────
-        local goals = get_session_goals(display)
-        if not goals then return end
+        local session_goals = get_session_goals(display)
+        if not session_goals then return end
 
         local session_log = {}
 
@@ -1494,21 +1307,21 @@ local function main(display, ...)
             -- io.popen() / unzip are not available in GrandMA3 Lua, so GDTF files
             -- cannot be read directly. Capabilities are queried from the MA3 patch
             -- object which already has all GDTF attribute data parsed in memory.
-            local caps = read_capabilities_from_patch(group)
+            local caps = patch_api.read_capabilities_from_patch(group)
 
-            -- Inject manufacturer-rated CRI into goals for context in measurement prompts
-            goals.gdtf_cri = caps and caps.gdtf_cri or nil
+            -- Inject manufacturer-rated CRI into session_goals for context in measurement prompts
+            session_goals.gdtf_cri = caps and caps.gdtf_cri or nil
 
             -- Look up historical data for pre-fill / pre-apply
             local hist = (fixture_make and fixture_model)
-                and fixture_db.find_best_for_fixture(fixture_records, fixture_make, fixture_model, goals.cct)
+                and fixture_db.find_best_for_fixture(fixture_records, fixture_make, fixture_model, session_goals.cct)
                 or nil
 
             -- Pre-apply best known correction before first measurement
             if hist then
-                local tx, ty, ref_date = apply_historical_prefill(display, group, hist, goals)
+                local tx, ty, ref_date = apply_historical_prefill(display, group, hist, session_goals)
                 if tx then
-                    local result = calibrate_group(group, tx, ty)
+                    local result = fixture_apply.calibrate_group(group, tx, ty)
                     if result.success then
                         MessageBox({ title="Pre-applied",
                             message=string.format(
@@ -1532,7 +1345,7 @@ local function main(display, ...)
             local MAX_AUTO_ATTEMPTS = 3
             local bridge_active = config and config.bridge_ip
                                           and config.bridge_ip ~= ""
-                                          and goals.meter == METER_C7000
+                                          and session_goals.meter == METER_C7000
             local loop_done     = false
             local loop_count    = 0  -- cycles in the current "run"
             local user_manual   = false  -- true once user switches to manual
@@ -1567,7 +1380,7 @@ local function main(display, ...)
                         elseif conf == 2 then
                             user_manual = true  -- switch to manual for remainder
                             measured, used_bridge =
-                                get_measurement_params(display, attempt, goals, hist, config)
+                                get_measurement_params(display, attempt, session_goals, hist, config)
                         else
                             measured = m
                         end
@@ -1586,7 +1399,7 @@ local function main(display, ...)
                         elseif r == 2 then
                             user_manual = true
                             measured, used_bridge =
-                                get_measurement_params(display, attempt, goals, hist, config)
+                                get_measurement_params(display, attempt, session_goals, hist, config)
                         else
                             attempt = attempt - 1  -- retry, don't count this attempt
                         end
@@ -1594,7 +1407,7 @@ local function main(display, ...)
                 else
                     -- First attempt or manual mode: normal measurement dialog
                     measured, used_bridge =
-                        get_measurement_params(display, attempt, goals, hist, config)
+                        get_measurement_params(display, attempt, session_goals, hist, config)
                     -- If user chose manual entry when bridge was available, stay manual
                     if bridge_active and not used_bridge then user_manual = true end
                 end
@@ -1604,14 +1417,14 @@ local function main(display, ...)
                 last_measured = measured
 
                 local correction = color_math.get_correction(
-                    goals.cct, goals.duv, measured.cct, measured.duv)
+                    session_goals.cct, session_goals.duv, measured.cct, measured.duv)
                 last_correction = correction
 
                 -- ── Bridge auto-loop path ─────────────────────────────────
                 if bridge_active and not user_manual then
                     loop_count = loop_count + 1
 
-                    if goals.goals_met(measured, goals) then
+                    if goal_eval.goals_met(measured, session_goals) then
                         -- All goals achieved – show success and finish this group
                         MessageBox({
                             title   = string.format("Goals Met \xe2\x80\x93 Group %s", group),
@@ -1631,9 +1444,9 @@ local function main(display, ...)
                     else
                         -- Goals not yet met: show assessment, apply correction
                         local apply = show_assessment(
-                            display, group, goals, measured, correction, attempt, caps)
+                            display, group, session_goals, measured, correction, attempt, caps)
                         if apply then
-                            local result = calibrate_group(
+                            local result = fixture_apply.calibrate_group(
                                 group, correction.target_x, correction.target_y)
                             if result.success then
                                 applied_once = true
@@ -1674,9 +1487,9 @@ local function main(display, ...)
                 -- ── Manual mode path ─────────────────────────────────────
                 else
                     local apply = show_assessment(
-                        display, group, goals, measured, correction, attempt, caps)
+                        display, group, session_goals, measured, correction, attempt, caps)
                     if apply then
-                        local result = calibrate_group(
+                        local result = fixture_apply.calibrate_group(
                             group, correction.target_x, correction.target_y)
                         show_result(display, result.success, group,
                             result.method, result.error_msg)
@@ -1692,7 +1505,7 @@ local function main(display, ...)
                 local db_entry = {
                     make        = fixture_make,
                     model       = fixture_model,
-                    kelvin      = goals.cct,
+                    kelvin      = session_goals.cct,
                     date        = os.date("%Y-%m-%d"),
                     contributor = config and config.github_username or "local",
                     cct         = last_measured.cct,
@@ -1721,7 +1534,7 @@ local function main(display, ...)
 
         until not ask_calibrate_another(display)
 
-        show_session_summary(display, session_log, goals)
+        show_session_summary(display, session_log, session_goals)
     end)
 
     if not ok then
