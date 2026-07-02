@@ -6,5 +6,6 @@
   "device_configured": true,
   "protocol_captured": true,
   "trigger_discovered": true,
+  "auth_required": false,
   "_note": "uptime_s and last_error are dynamic — tests assert type/range only"
 }

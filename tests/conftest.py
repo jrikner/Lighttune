@@ -39,7 +39,20 @@ def golden_discover() -> dict:
 
 
 @pytest.fixture
-def client():
+def client(monkeypatch):
+    monkeypatch.delenv("BRIDGE_API_KEY", raising=False)
+    bridge_server._bridge_api_key = None
     bridge_server._use_mock_global = True
     with TestClient(bridge_server.app) as test_client:
         yield test_client
+    bridge_server._bridge_api_key = None
+
+
+@pytest.fixture
+def auth_client(monkeypatch):
+    monkeypatch.setenv("BRIDGE_API_KEY", "test-secret")
+    bridge_server._bridge_api_key = None
+    bridge_server._use_mock_global = True
+    with TestClient(bridge_server.app) as test_client:
+        yield test_client
+    bridge_server._bridge_api_key = None

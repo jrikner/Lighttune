@@ -4,5 +4,8 @@
   "github_username":   "your_github_username",
 
   "bridge_ip":         "192.168.1.50",
-  "bridge_port":       8765
+  "bridge_port":       8765,
+
+  "_comment_bridge_api_key": "Optional shared secret when the Pi bridge has BRIDGE_API_KEY or bridge_api_key configured",
+  "bridge_api_key":    ""
 }

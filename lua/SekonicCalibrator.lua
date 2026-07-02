@@ -847,7 +847,7 @@ end
 -- Minimal HTTP client using LuaSocket (available in GrandMA3 via lua.ftp).
 -- Returns: status_code (number), body (string)   on success
 --          nil, err_string                        on connection failure
-_http_request = function(method, host, port, path, timeout_s)
+_http_request = function(method, host, port, path, timeout_s, api_key)
     local ok, socket = pcall(require, "socket")
     if not ok then return nil, "luasocket_unavailable" end
 
@@ -860,9 +860,16 @@ _http_request = function(method, host, port, path, timeout_s)
         return nil, "connection_refused: " .. tostring(conn_err)
     end
 
+    local header_lines = {
+        string.format("Host: %s", host),
+        "Content-Length: 0",
+    }
+    if api_key and api_key ~= "" then
+        header_lines[#header_lines + 1] = string.format("X-Bridge-Key: %s", api_key)
+    end
     local req = string.format(
-        "%s %s HTTP/1.0\r\nHost: %s\r\nContent-Length: 0\r\n\r\n",
-        method, path, host)
+        "%s %s HTTP/1.0\r\n%s\r\n\r\n",
+        method, path, table.concat(header_lines, "\r\n"))
     tcp:send(req)
 
     tcp:settimeout(timeout_s or 38)
@@ -885,7 +892,8 @@ bridge_fetch_measurement = function(config)
         return nil, "no_bridge_configured"
     end
     local status, body = _http_request(
-        "POST", config.bridge_ip, config.bridge_port or 8765, "/measure", 38)
+        "POST", config.bridge_ip, config.bridge_port or 8765, "/measure", 38,
+        config.bridge_api_key)
     if not status then return nil, tostring(body) end
     if status ~= 200 then
         return nil, body:match('"error"%s*:%s*"([^"]+)"') or ("http_" .. status)
@@ -913,7 +921,8 @@ local function bridge_check_status(config)  -- does not need forward decl (only 
         return false, false, nil, false, false, false
     end
     local status, body = _http_request(
-        "GET", config.bridge_ip, config.bridge_port or 8765, "/status", 5)
+        "GET", config.bridge_ip, config.bridge_port or 8765, "/status", 5,
+        config.bridge_api_key)
     if not status or status ~= 200 then return false, false, nil, false, false, false end
     local connected    = body:find('"connected"%s*:%s*true')            ~= nil
     local dev_cfg      = body:find('"device_configured"%s*:%s*true')    ~= nil
@@ -930,7 +939,7 @@ end
 _run_trigger_discovery = function(display, config)
     local lt_status, lt_body = _http_request(
         "POST", config.bridge_ip, config.bridge_port or 8765,
-        "/learn_trigger", 120)   -- 2-min timeout covers all candidates
+        "/learn_trigger", 120, config.bridge_api_key)   -- 2-min timeout covers all candidates
 
     local lt_ok  = lt_status == 200
                    and lt_body:find('"success"%s*:%s*true') ~= nil
@@ -1067,7 +1076,8 @@ run_bridge_setup = function(display, config)
     if step1 ~= 1 then return end
 
     local disc_status, disc_body = _http_request(
-        "GET", config.bridge_ip, config.bridge_port or 8765, "/discover", 12)
+        "GET", config.bridge_ip, config.bridge_port or 8765, "/discover", 12,
+        config.bridge_api_key)
 
     if not disc_status or disc_status ~= 200 then
         MessageBox({
@@ -1119,7 +1129,8 @@ run_bridge_setup = function(display, config)
     if step2 ~= 1 then return end
 
     local cap_status, cap_body = _http_request(
-        "POST", config.bridge_ip, config.bridge_port or 8765, "/capture", 35)
+        "POST", config.bridge_ip, config.bridge_port or 8765, "/capture", 35,
+        config.bridge_api_key)
 
     if not cap_status or cap_status ~= 200 then
         MessageBox({
@@ -1172,7 +1183,7 @@ run_bridge_setup = function(display, config)
                 .."%s\xe2\x80\xa6\n\n"
                 .."Auto-parse did not match a known pattern.\n"
                 .."See README: update _parse() in\n"
-                .."meter_c7000_hid.py on the Pi.",
+                .."meter_c7000_bulk.py on the Pi.",
                 cap_raw:sub(1, 48)),
             display_handle = display,
             buttons = {"OK"},
@@ -1403,20 +1414,22 @@ local function get_data_dir()
 end
 
 -- Read config.json. Returns config table or nil.
--- Supported fields: github_username, bridge_ip, bridge_port.
+-- Supported fields: github_username, bridge_ip, bridge_port, bridge_api_key.
 local function load_config()
     local dir = get_plugin_dir()
     if not dir then return nil end
     local path = dir .. get_sep() .. "config.json"
     local f = io.open(path, "r"); if not f then return nil end
     local content = f:read("*a"); f:close()
-    local username    = content:match('"github_username"%s*:%s*"([^"]+)"')
-    local bridge_ip   = content:match('"bridge_ip"%s*:%s*"([^"]+)"')
-    local bridge_port = tonumber(content:match('"bridge_port"%s*:%s*(%d+)'))
+    local username       = content:match('"github_username"%s*:%s*"([^"]+)"')
+    local bridge_ip      = content:match('"bridge_ip"%s*:%s*"([^"]+)"')
+    local bridge_port    = tonumber(content:match('"bridge_port"%s*:%s*(%d+)'))
+    local bridge_api_key = content:match('"bridge_api_key"%s*:%s*"([^"]*)"')
     return {
         github_username = username,
         bridge_ip       = bridge_ip,
         bridge_port     = bridge_port or 8765,
+        bridge_api_key  = bridge_api_key,
     }
 end
 

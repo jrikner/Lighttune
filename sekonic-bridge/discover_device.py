@@ -6,7 +6,7 @@ Run this on the Raspberry Pi with the C-7000 connected via USB:
     python3 discover_device.py
 
 Scans all USB devices and prints VID/PID for each. Highlights any Sekonic
-device found and shows the exact values to copy into meter_c7000_hid.py.
+device found and shows the exact values to copy into meter_c7000_bulk.py.
 
 If the VID/PID are found, this script also writes device_config.json so
 the bridge server self-configures without manual file editing.
@@ -73,7 +73,7 @@ def main() -> None:
         print(f"  VID = 0x{vid:04x}  ({vid})")
         print(f"  PID = 0x{pid:04x}  ({pid})")
         print()
-        print("Update meter_c7000_hid.py:")
+        print("Update meter_c7000_bulk.py:")
         print(f"  VENDOR_ID  = 0x{vid:04x}")
         print(f"  PRODUCT_ID = 0x{pid:04x}")
         print()

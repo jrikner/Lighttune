@@ -32,7 +32,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
 import uvicorn
 
@@ -52,6 +52,50 @@ log = logging.getLogger("sekonic-bridge")
 
 INSTALL_DIR = Path(__file__).parent
 DEVICE_CONFIG_PATH = INSTALL_DIR / "device_config.json"
+BRIDGE_CONFIG_PATH = INSTALL_DIR / "bridge_config.json"
+
+_bridge_api_key: str | None = None  # cached; None = not yet loaded
+
+
+def _load_bridge_api_key() -> str:
+    """Load optional API key from BRIDGE_API_KEY env or bridge_config.json."""
+    env_key = os.environ.get("BRIDGE_API_KEY", "").strip()
+    if env_key:
+        return env_key
+    if BRIDGE_CONFIG_PATH.exists():
+        try:
+            cfg = json.loads(BRIDGE_CONFIG_PATH.read_text())
+            file_key = cfg.get("bridge_api_key", "")
+            if isinstance(file_key, str):
+                return file_key.strip()
+        except Exception:
+            pass
+    return ""
+
+
+def _get_bridge_api_key() -> str:
+    global _bridge_api_key
+    if _bridge_api_key is None:
+        _bridge_api_key = _load_bridge_api_key()
+    return _bridge_api_key
+
+
+def _auth_required() -> bool:
+    return bool(_get_bridge_api_key())
+
+
+async def verify_bridge_key(
+    x_bridge_key: str | None = Header(None, alias="X-Bridge-Key"),
+) -> None:
+    """Reject requests when a key is configured but the header is missing or wrong."""
+    key = _get_bridge_api_key()
+    if not key:
+        return
+    if x_bridge_key != key:
+        raise HTTPException(
+            status_code=401,
+            detail={"error": "unauthorized", "hint": "Send X-Bridge-Key header"},
+        )
 
 
 def _load_device_config() -> dict:
@@ -120,9 +164,9 @@ def _load_meter(use_mock: bool):
         backend = MockMeter()
         log.info("Using MOCK meter backend (development mode)")
     else:
-        from meter_c7000_hid import C7000HID
-        backend = C7000HID()
-        log.info("Using C-7000 USB HID backend")
+        from meter_c7000_bulk import C7000Bulk
+        backend = C7000Bulk()
+        log.info("Using C-7000 USB bulk backend")
 
     log.info("Connecting to meter…")
     try:
@@ -163,6 +207,7 @@ app = FastAPI(
     description="Remote measurement bridge for Lighttune SekonicCalibrator",
     version="0.5.0-replan",
     lifespan=lifespan,
+    dependencies=[Depends(verify_bridge_key)],
 )
 
 
@@ -180,6 +225,7 @@ async def status():
         "device_configured":  _is_device_configured()  or _use_mock_global,
         "protocol_captured":  _is_protocol_captured()  or _use_mock_global,
         "trigger_discovered": _is_trigger_discovered() or _use_mock_global,
+        "auth_required":      _auth_required(),
     }
 
 
@@ -366,10 +412,10 @@ async def capture():
 
     # ── C-7000 fast path: protocol fully known, trigger directly ──────────────
     if vendor_id == 0x0A41:
-        from meter_c7000_hid import C7000HID
+        from meter_c7000_bulk import C7000Bulk
 
         def _test_measure():
-            m = C7000HID()
+            m = C7000Bulk()
             if not m.connect():
                 return None
             try:
@@ -489,7 +535,19 @@ async def learn_trigger():
     cfg = _load_device_config()
     if cfg.get("trigger_discovered"):
         return {"success": True, "already_known": True,
-                "trigger_cmd_hex": cfg["trigger_cmd_hex"]}
+                "trigger_cmd_hex": cfg.get("trigger_cmd_hex", "bulk")}
+
+    # C-7000 bulk fast-path: skreader protocol needs no HID trigger probe grid.
+    if cfg.get("vendor_id") == 0x0A41 and cfg.get("protocol_captured"):
+        cfg.update({"trigger_cmd_hex": "bulk", "trigger_discovered": True})
+        _save_device_config(cfg)
+        log.info("learn_trigger (C-7000 bulk fast-path): trigger_discovered=true")
+        return {
+            "success": True,
+            "already_known": False,
+            "trigger_cmd_hex": "bulk",
+            "attempts": 0,
+        }
 
     if not cfg.get("vendor_id") or not cfg.get("product_id"):
         raise HTTPException(
@@ -504,7 +562,7 @@ async def learn_trigger():
                     "hint": "Call POST /capture first to capture the response format"}
         )
 
-    from meter_c7000_hid import C7000HID
+    from meter_c7000_bulk import C7000Bulk
 
     candidates = _build_trigger_candidates()
     loop = asyncio.get_event_loop()
@@ -512,7 +570,7 @@ async def learn_trigger():
     async with _measurement_lock:
         for idx, cmd_bytes in enumerate(candidates):
             def _probe(cmd=cmd_bytes):
-                m = C7000HID()
+                m = C7000Bulk()
                 try:
                     if not m.connect():
                         return None
