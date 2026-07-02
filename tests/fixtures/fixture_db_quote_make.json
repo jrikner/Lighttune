@@ -1,0 +1,11 @@
+{
+  "make": "Acme \"Pro\" 600",
+  "model": "X",
+  "kelvin": 5600,
+  "date": "2026-01-01",
+  "contributor": "t",
+  "cct": 5580,
+  "duv": 0.003,
+  "cri": 90,
+  "r9": 80
+}

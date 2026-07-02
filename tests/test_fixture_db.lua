@@ -198,4 +198,23 @@ return function(M)
         local histNil=find_best_for_fixture(records,"Unknown","Model",5600)
         M.assert_equal("no data returns nil",histNil,nil)
     end
+
+    M.section("golden fixture_db_quote_make.json")
+    do
+        local fh = io.open("tests/fixtures/fixture_db_quote_make.json", "r")
+        M.assert_true("golden fixture file readable", fh ~= nil)
+        if fh then
+            local content = fh:read("*a")
+            fh:close()
+            local wrapped = "[" .. content .. "]"
+            local parsed, skipped = fixture_db.json_parse_db_array(wrapped)
+            M.assert_equal("golden quote count", #parsed, 1)
+            M.assert_equal("golden quote make", parsed[1].make, 'Acme "Pro" 600')
+            M.assert_equal("golden quote skipped", skipped or 0, 0)
+            local enc = json_encode_db_array({parsed[1]})
+            local roundtrip, skipped2 = fixture_db.json_parse_db_array(enc)
+            M.assert_equal("golden roundtrip make", roundtrip[1].make, 'Acme "Pro" 600')
+            M.assert_equal("golden roundtrip skipped", skipped2 or 0, 0)
+        end
+    end
 end
