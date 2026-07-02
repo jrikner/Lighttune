@@ -364,4 +364,4 @@ GitHub Actions workflow [`.github/workflows/ci.yml`](.github/workflows/ci.yml) r
 
 MIT — free to use and modify.
 
-Part of the [Lighttune](https://github.com/jrikner/Lighttune-0.1) project.
+Part of the [Lighttune](https://github.com/jrikner/Lighttune) project.

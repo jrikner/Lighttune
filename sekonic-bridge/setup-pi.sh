@@ -10,12 +10,12 @@
 #   sudo bash setup-pi.sh
 #
 # One-line install from GitHub:
-#   curl -fsSL https://raw.githubusercontent.com/jrikner/Lighttune-0.1/main/sekonic-bridge/setup-pi.sh | sudo bash
+#   curl -fsSL https://raw.githubusercontent.com/jrikner/Lighttune/claude/lighttune-main/sekonic-bridge/setup-pi.sh | sudo bash
 # ============================================================================
 
 set -e
 
-REPO_URL="https://raw.githubusercontent.com/jrikner/Lighttune-0.1/main/sekonic-bridge"
+REPO_URL="https://raw.githubusercontent.com/jrikner/Lighttune/claude/lighttune-main/sekonic-bridge"
 INSTALL_DIR="/opt/sekonic-bridge"
 SERVICE_USER="sekonic"
 SERVICE_FILE="/etc/systemd/system/sekonic-bridge.service"

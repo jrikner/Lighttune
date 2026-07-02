@@ -36,8 +36,8 @@ no separate network needed — the bridge talks to the plugin over
 ### Step 1 — Run the setup script
 
 ```bash
-git clone https://github.com/jrikner/Lighttune-0.1
-cd Lighttune-0.1/sekonic-bridge
+git clone https://github.com/jrikner/Lighttune
+cd Lighttune/sekonic-bridge
 ./setup-mac.sh
 ```
 
@@ -161,8 +161,8 @@ The easiest path. Build a ready-to-flash image on any Linux machine, then flash 
 ### Step 1 — Build the image
 
 ```bash
-git clone https://github.com/jrikner/Lighttune-0.1
-cd Lighttune-0.1/sekonic-bridge
+git clone https://github.com/jrikner/Lighttune
+cd Lighttune/sekonic-bridge
 
 # Without WiFi pre-seed (configure via Raspberry Pi Imager):
 sudo ./build-image.sh
@@ -201,13 +201,13 @@ Insert the SD card into the Pi, connect power. The Pi will:
 If you already have a Raspberry Pi running, skip the image build:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jrikner/Lighttune-0.1/main/sekonic-bridge/setup-pi.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/jrikner/Lighttune/claude/lighttune-main/sekonic-bridge/setup-pi.sh | sudo bash
 ```
 
 Or download and run manually:
 
 ```bash
-wget https://raw.githubusercontent.com/jrikner/Lighttune-0.1/main/sekonic-bridge/setup-pi.sh
+wget https://raw.githubusercontent.com/jrikner/Lighttune/claude/lighttune-main/sekonic-bridge/setup-pi.sh
 sudo bash setup-pi.sh
 ```
 

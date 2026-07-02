@@ -1,6 +1,6 @@
 [Unit]
 Description=Sekonic C-7000 Bridge Server (Lighttune)
-Documentation=https://github.com/jrikner/Lighttune-0.1/tree/main/sekonic-bridge
+Documentation=https://github.com/jrikner/Lighttune/tree/claude/lighttune-main/sekonic-bridge
 After=network-online.target
 Wants=network-online.target
 
