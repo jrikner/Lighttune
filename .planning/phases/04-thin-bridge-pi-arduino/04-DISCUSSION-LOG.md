@@ -7,18 +7,21 @@
 **Phase:** 4-thin-bridge-pi-arduino
 **Areas discussed:** Setup endpoint fate, /status JSON shape, API key auth, USB driver refactor, Pi packaging scope, Arduino scope
 
+**Revision (2026-07-02):** User requested in-plugin setup remain for base version — D-55–D-60, D-75–D-76 updated in CONTEXT.md.
+
 ---
 
 ## 1. Setup endpoint fate
 
 | Option | Description | Selected |
 |--------|-------------|----------|
-| Delete routes | Remove `/capture` and `/learn_trigger` from server.py | ✓ |
+| Delete routes | Remove `/capture` and `/learn_trigger` from server.py | (initial) |
+| **Retain routes** | Keep full plugin wizard HTTP surface | ✓ **revised** |
 | 410 Gone stubs | Return structured error pointing to console wizard | |
 | Dev-only hidden | Keep undocumented for Pi debugging | |
 
-**User's choice:** All areas — project-aligned default: **delete routes** (D-55–D-57)  
-**Notes:** Matches ROADMAP "transport-only" and Phase 5 console wizard plan. Accept temporary plugin wizard breakage until Phase 5.
+**User's choice (revised):** **Retain** `/capture`, `/learn_trigger`, and plugin `run_bridge_setup` flow (D-55–D-57, D-75)  
+**Notes:** "Thin bridge" = no calibration on Pi, not removal of operator setup from plugin.
 
 ---
 
@@ -26,12 +29,11 @@
 
 | Option | Description | Selected |
 |--------|-------------|----------|
-| Slim contract | Drop setup flags; add `auth_required` | ✓ |
-| Keep flags temporarily | Backward compat until Phase 5 plugin ships | |
+| Slim contract | Drop setup flags; add `auth_required` | (initial) |
+| **Keep flags + add auth** | Retain device_configured/protocol_captured/trigger_discovered; add auth_required | ✓ **revised** |
 | Minimal ping | Only `status` + `connected` | |
 
-**User's choice:** **Slim contract** (D-58–D-60)  
-**Notes:** Plugin currently regex-parses setup flags — Phase 5 replaces that logic.
+**User's choice (revised):** **Keep existing setup flags**; add `auth_required` when key configured (D-58–D-60)
 
 ---
 
@@ -43,7 +45,7 @@
 | Measure-only auth | Protect POST /measure only | |
 | Bearer token | Authorization: Bearer header | |
 
-**User's choice:** **X-Bridge-Key on all three routes**; env + bridge_config.json; minimal plugin header in Phase 4 (D-61–D-65)  
+**User's choice:** **X-Bridge-Key on all routes including setup**; env + bridge_config.json; plugin sends header on every `_http_request` (D-61–D-65)  
 **Notes:** Open LAN when key unset preserves current show-network model.
 
 ---
@@ -93,7 +95,7 @@
 
 ## Deferred Ideas
 
-- Console setup wizard — Phase 5
+- Enhanced setup UX (not removal) — Phase 5 may improve
 - TLS on bridge — future
 - Arduino transport — v2
-- Wireshark capture path for unknown meters — not thin-bridge HTTP API
+- Wireshark capture path for unknown meters — optional dev, not replacing plugin wizard

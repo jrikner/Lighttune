@@ -8,7 +8,7 @@ status: planning
 stopped_at: Phase 4 context gathered
 last_updated: "2026-07-02T00:30:16.578Z"
 last_activity: 2026-07-02
-last_activity_desc: Phase 3 complete, transitioned to Phase 4
+last_activity_desc: Phase 4 context revised — in-plugin setup retained for base version
 progress:
   total_phases: 7
   completed_phases: 3
@@ -29,9 +29,15 @@ progress:
 Phase: 4 of 7 (Thin Bridge (Pi/Arduino))
 Plan: Not started
 Status: Ready to plan (`/gsd-plan-phase 4`)
-Last activity: 2026-07-02 — Phase 3 complete, transitioned to Phase 4
+Last activity: 2026-07-02 — Phase 4 context revised (keep in-plugin setup)
 
 Progress: [██████░░░░] 43%
+
+## Phase 4 locked decisions (revised)
+
+- In-plugin Bridge Setup wizard must remain for base version
+- Routes: `/discover`, `/capture`, `/learn_trigger`; setup flags on `/status`
+- Thin bridge = no calibration on Pi + bulk rename — not removing setup HTTP API
 
 ## Phase 3 Outcomes
 
