@@ -12,12 +12,14 @@ local run_fixture_db = require("test_fixture_db")
 local run_goals = require("test_goals")
 local run_bridge_client = require("test_bridge_client")
 local run_config = require("test_config")
+local run_session_format = require("test_session_format")
 
 run_color_math(M)
 run_fixture_db(M)
 run_goals(M)
 run_bridge_client(M)
 run_config(M)
+run_session_format(M)
 
 local PASS, FAIL = M.get_counts()
 

@@ -35,7 +35,7 @@ Pi/Arduino remain valid for **stage-split** installs only; they are not required
 - [x] **Phase 3: Shared Test Strategy & CI** - Host Lua tests, bridge pytest, golden fixtures, GitHub workflow (2026-07-02)
 - [x] **Phase 4: Thin Bridge (Pi/Arduino)** - Minimal HTTP server: USB read, raw JSON return, mock for dev — no calibration logic on device (completed 2026-07-02)
 - [x] **Phase 5: MA3 ↔ HTTP Integration** - bridge_client, remote measure, setup wizard, auto-loop (completed 2026-07-02)
-- [ ] **Phase 6: Operator UX, Docs & Show Readiness** - v0.4 workflow modularized, patch UX, **macOS onPC runbook (primary)**, Pi stage runbook (secondary)
+- [x] **Phase 6: Operator UX, Docs & Show Readiness** - v0.4 workflow modularized, patch UX, **macOS onPC runbook (primary)**, Pi stage runbook (secondary) (completed 2026-07-02)
 - [ ] **Phase 7: Console UAT & Hardware Validation** - **macOS onPC + local bridge + C-7000** end-to-end sign-off (Pi topology secondary)
 
 ## Phase Details
@@ -198,15 +198,15 @@ Plans:
 Plans:
 **Wave 1**
 
-- [ ] 06-01-PLAN.md — macOS onPC runbook + config.lua + config.json.example fix (TOP-01, UX-05, D-105)
+- [x] 06-01-PLAN.md — macOS onPC runbook + config.lua + config.json.example fix (TOP-01, UX-05, D-105)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 06-02-PLAN.md — goals shadowing fix + patch_api.lua + fixture_apply.lua (UX-01/02, CAL-04, D-106)
+- [x] 06-02-PLAN.md — goals shadowing fix + patch_api.lua + fixture_apply.lua (UX-01/02, CAL-04, D-106)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 06-03-PLAN.md — ui/* + calibration.lua + thin shell + bridge_client merge + validation (CAL-01–03/05–06, DB-02/03, UX-03/04, D-107–D-121)
+- [x] 06-03-PLAN.md — ui/* + calibration.lua + thin shell + bridge_client merge + validation (CAL-01–03/05–06, DB-02/03, UX-03/04, D-107–D-121)
 
 **UI hint**: yes
 
