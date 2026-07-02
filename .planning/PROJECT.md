@@ -2,9 +2,9 @@
 
 ## What This Is
 
-Lighttune is a GrandMA3 plugin that calibrates fixture groups to broadcast-accurate white light using Sekonic spectrometer readings (C-700, C-800, C-7000). It is built for TV and live production crews who need consistent color across fixture groups without leaving the console workflow. v1 adds a Raspberry Pi bridge so a C-7000 on stage can be triggered over HTTP from FOH, with manual meter entry retained as fallback.
+Lighttune is a GrandMA3 plugin that calibrates fixture groups to broadcast-accurate white light using Sekonic spectrometer readings (C-700, C-800, C-7000). It is built for TV and live production crews who need consistent color across fixture groups without leaving the console workflow. v1 adds a **thin HTTP bridge** so a C-7000 can be triggered remotely from the plugin, with manual meter entry retained as fallback.
 
-This GSD milestone **replans from scratch**: one GrandMA3 plugin owns all calibration intelligence; the Pi (or Arduino-class device) is a **thin HTTP transport** between the Sekonic meter and the console. Reuses proven color math and workflows from prior experiments (v0.4 main, v0.5 + sekonic-bridge on feature branches).
+This GSD milestone **replans from scratch**: one GrandMA3 plugin owns all calibration intelligence; a **local bridge process** (Python `sekonic-bridge`) is **transport-only** between the Sekonic USB port and the console. **Primary deployment: macOS laptop running GrandMA3 onPC with the C-7000 plugged into the same Mac** (`bridge_ip: 127.0.0.1`). A Raspberry Pi on stage remains an optional path when console and meter are on different machines.
 
 ## Core Value
 
@@ -27,11 +27,12 @@ If tradeoffs arise, accuracy targets are not sacrificed for speed—but the defa
 ### Active
 
 - [ ] **Single-plugin architecture**: one MA3 plugin artifact with color math, session UX, fixture DB, goals, and HTTP client — Pi carries no calibration logic
-- [ ] **Thin bridge**: Pi/Arduino only reads Sekonic over USB and exposes raw MeasurementRecord JSON via HTTP (`/status`, `/measure`); no wizard/business logic on device beyond meter I/O
-- [ ] v1 integration: GrandMA3 plugin + bridge on show LAN (HTTP, no HTTPS on console)
+- [ ] **Thin bridge**: Host machine (prefer **macOS onPC laptop**) reads Sekonic over USB and exposes raw MeasurementRecord JSON via HTTP (`/status`, `/measure`); no wizard/business logic on device beyond meter I/O
+- [ ] **Primary topology (TOP-01)**: macOS + onPC + local bridge at `127.0.0.1` — no Pi required when console and meter share one machine
+- [ ] v1 integration: GrandMA3 plugin + bridge (localhost or show LAN; HTTP, no HTTPS on console)
 - [ ] Remote C-7000 measurement from plugin with manual fallback always available
 - [ ] Research: MA3 Lua HTTP client options, reliability, timeouts, error UX on real consoles
-- [ ] Research: whether Sekonic or other meters expose native HTTP (future topology; v1 stays Pi bridge)
+- [ ] Research: whether Sekonic or other meters expose native HTTP (future topology; v1 uses local/stage bridge)
 - [ ] Shared test strategy: color math and DB logic tested once, not duplicated in `test_color_math.lua`
 - [ ] Align docs, version, and `plugin.xml` with implementation (no community-upload or GDTF-on-disk false claims)
 - [ ] **Lightweight bridge auth**: shared secret (API key header) on `/measure` and `/status` if feasible in MA3 Lua — show LAN + auth defense-in-depth
@@ -54,9 +55,11 @@ If tradeoffs arise, accuracy targets are not sacrificed for speed—but the defa
 
 **Users:** Lighting programmers and LDs on GrandMA3 in broadcast/theatre environments.
 
-**Environment:** Console at FOH; meter at subject/stage; Pi bridge on show network; Sekonic C-7000 via USB to Pi.
+**Environment (primary):** macOS laptop — GrandMA3 onPC + `sekonic-bridge` on `127.0.0.1` + C-7000 USB on the same machine.
 
-**Topology decision:** v1 = thin bridge (C-7000 → USB → Pi/Arduino → HTTP → plugin). All calibration decisions live on the console. Research whether direct device HTTP exists for future versions.
+**Environment (secondary):** Hardware console at FOH; meter at subject/stage; Pi bridge on show network; Sekonic C-7000 via USB to Pi.
+
+**Topology decision (2026-07-02):** **macOS local bridge is v1 default.** Plugin → HTTP → bridge on USB host. Pi/Arduino only when console and meter are physically separated. Native Sekonic HTTP remains future research.
 
 **Architecture decision (2026-07-01):** Prefer **one plugin** with maximum logic on-console. Bridge is transport-only — trigger measure, return `{ cct, duv, cri, r9, tlci? }`, report connection status. Setup wizard and auto-loop orchestration stay in the plugin.
 
@@ -73,10 +76,11 @@ If tradeoffs arise, accuracy targets are not sacrificed for speed—but the defa
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Single plugin, thin bridge | All calibration intelligence on MA3; Pi/Arduino = HTTP + USB meter I/O only | — Pending |
-| Cherry-pick merge (Phase 1) | Take proven commits from experimental branches; avoid wholesale merge of conflicting snapshots | — Pending |
-| v1 includes plugin + bridge | User priority: minimal typing at FOH with C-7000 | — Pending |
-| Topology 2: Pi bridge now, research direct HTTP later | Pragmatic v1; leave door open for native device APIs | — Pending |
+| Single plugin, thin bridge | All calibration intelligence on MA3; bridge host = HTTP + USB meter I/O only | Validated Phases 4–5 |
+| **macOS local bridge (TOP-01)** | Same Mac runs onPC + sekonic-bridge; C-7000 USB local; `127.0.0.1` — **primary v1 path**; Pi optional for stage split | **2026-07-02 — priority** |
+| Cherry-pick merge (Phase 1) | Take proven commits from experimental branches; avoid wholesale merge of conflicting snapshots | Complete |
+| v1 includes plugin + bridge | User priority: minimal typing at FOH with C-7000 | Validated Phase 5 |
+| Topology: local Mac first, Pi stage second | No Pi needed when laptop owns USB; Pi for FOH/stage separation | **2026-07-02** |
 | Dual core value: speed + accuracy | Both required for broadcast FOH acceptance | — Pending |
 | Bridge auth (shared secret) | Simple `X-Bridge-Key` header if MA3 can send it; reject unsigned requests on Pi | — Pending |
 | v1 proof = connect + display | First ship gate: plugin↔bridge round-trip and measurement values shown in UI | — Pending |
@@ -101,4 +105,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-01 after architecture & merge strategy refinement*
+*Last updated: 2026-07-02 — macOS local bridge elevated to primary topology (TOP-01)*

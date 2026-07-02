@@ -17,7 +17,11 @@
 - [ ] **ARCH-02**: Fixture database logic extracted to module with hardened JSON parse/encode (not regex-only)
 - [ ] **ARCH-03**: Goals and quality assessment logic isolated from UI and transport layers
 - [ ] **ARCH-04**: Bridge HTTP client extracted to `bridge_client.lua` with explicit timeouts and error types
-- [ ] **ARCH-05**: Plugin ships as **one deployable MA3 plugin**; calibration logic stays on-console (Pi is transport-only)
+- [ ] **ARCH-05**: Plugin ships as **one deployable MA3 plugin**; calibration logic stays on-console (bridge host is transport-only)
+
+### Deployment topology
+
+- [ ] **TOP-01**: **Primary path — macOS + GrandMA3 onPC + local bridge**: C-7000 USB on the same Mac; `sekonic-bridge` listens on `127.0.0.1:8765`; plugin `bridge_ip` set to localhost; documented runbook and UAT default; **no Pi required** for this topology
 
 ### Calibration workflow (table stakes)
 
@@ -31,7 +35,7 @@
 ### Meter & bridge integration
 
 - [ ] **MTR-01**: Thin bridge serves `/status`, `/measure`, minimal `/discover` on show LAN — raw meter fields only
-- [ ] **MTR-02**: C-7000 USB bulk driver on Pi (skreader-derived protocol); renamed/refactored from HID misnomer
+- [ ] **MTR-02**: C-7000 USB bulk driver on bridge host (macOS or Pi; skreader-derived protocol); renamed/refactored from HID misnomer
 - [ ] **MTR-03**: Plugin triggers remote measurement over HTTP/1.0 (LuaSocket TCP); parses MeasurementRecord JSON
 - [ ] **MTR-04**: Remote measure UI: retry, enter manually, or cancel on bridge failure
 - [ ] **MTR-05**: Auto-loop after remote measure (max 3 cycles) using `goals_met()` with operator exit
@@ -51,7 +55,7 @@
 - [ ] **UX-02**: Feature-aware hints (Tint, CTB, CTO, ColorWheel) from Patch API
 - [ ] **UX-03**: Conditional gel hints per existing rules (wheel / no Tint / extreme Duv)
 - [ ] **UX-04**: Quality assessment screen before apply with broadcast rating bands
-- [ ] **UX-05**: Bridge network runbook in docs (VLAN, firewall, troubleshooting)
+- [ ] **UX-05**: Bridge deployment docs: **macOS onPC runbook first** (install bridge, USB, `127.0.0.1` config); Pi stage-split runbook second (VLAN, firewall, troubleshooting)
 
 ### Testing & quality gates
 
@@ -62,7 +66,7 @@
 
 ### Hardware validation
 
-- [ ] **UAT-01**: End-to-end validated on real GrandMA3 1.6+ with Pi bridge and C-7000
+- [ ] **UAT-01**: End-to-end validated on **macOS GrandMA3 onPC 1.6+** with **local sekonic-bridge** (`127.0.0.1`) and C-7000 USB on the same machine (**primary**); Pi stage topology optional secondary
 - [ ] **UAT-02**: `require("socket")` / LuaSocket TCP verified on target console build
 - [ ] **UAT-03**: Operator triggers remote measure from plugin, sees CCT/Duv/CRI/R9/TLCI in plugin UI (connection back-and-forth + results displayed)
 
@@ -87,7 +91,7 @@ Deferred to future release.
 | Feature | Reason |
 |---------|--------|
 | HTTPS/TLS from MA3 plugin | Platform constraint; trusted show LAN only |
-| Native Sekonic HTTP in v1 | Topology 2: Pi bridge now; direct device research deferred |
+| Native Sekonic HTTP in v1 | Local/stage bridge now; direct device research deferred |
 | GitHub auto-upload from console | No HTTPS/shell; local JSON export only |
 | iOS USB to C-7000 | Use WebRemote + plugin at FOH |
 | Full rewrite discarding v0.4 math/UX | Brownfield replan reuses validated behavior |
@@ -127,6 +131,7 @@ Deferred to future release.
 | UX-03 | Phase 6 | Pending |
 | UX-04 | Phase 6 | Pending |
 | UX-05 | Phase 6 | Pending |
+| TOP-01 | Phase 6, 7 | Pending |
 | TST-01 | Phase 3 | Complete |
 | TST-02 | Phase 3 | Complete |
 | TST-03 | Phase 3 | Complete |
@@ -136,10 +141,10 @@ Deferred to future release.
 | UAT-03 | Phase 7 | Pending |
 
 **Coverage:**
-- v1 requirements: 36 total
-- Mapped to phases: 36
+- v1 requirements: 37 total
+- Mapped to phases: 37
 - Unmapped: 0
 
 ---
 *Requirements defined: 2026-07-01*  
-*Last updated: 2026-07-01 after roadmap creation*
+*Last updated: 2026-07-02 — TOP-01 macOS local bridge primary topology*

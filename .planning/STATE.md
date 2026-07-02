@@ -5,10 +5,10 @@ milestone_name: milestone
 current_phase: 6
 current_phase_name: Operator UX, Docs & Show Readiness
 status: ready_to_plan
-stopped_at: Phase 5 executed — human UAT pending
-last_updated: "2026-07-02T22:00:00.000Z"
+stopped_at: Phase 6 planning — macOS TOP-01 priority
+last_updated: "2026-07-02T23:30:00.000Z"
 last_activity: 2026-07-02
-last_activity_desc: Phase 5 executed via /gsd-execute-phase 5 (3 plans, merged to claude/lighttune-main)
+last_activity_desc: TOP-01 macOS local bridge elevated to primary topology on roadmap
 progress:
   total_phases: 7
   completed_phases: 5
@@ -22,16 +22,24 @@ progress:
 ## Project Reference
 
 **Core value:** FOH calibration in under five minutes with broadcast-grade targets.
-**Current focus:** Phase 6 — Operator UX, Docs & Show Readiness
+**Current focus:** Phase 6 — Operator UX, Docs & Show Readiness (**macOS onPC runbook is top priority**)
 
 ## Current Position
 
 Phase: 6 of 7 (Operator UX, Docs & Show Readiness)
 Plan: 0 (not yet planned)
 Status: Ready to plan (`/gsd-plan-phase 6`)
-Last activity: 2026-07-02 — Phase 5 executed (bridge_client, 161 lua PASS, pytest 9 passed)
+Last activity: 2026-07-02 — Topology decision: macOS local bridge primary (TOP-01)
 
 Progress: [█████████░] 71%
+
+## Locked decision — macOS primary (TOP-01, 2026-07-02)
+
+- **Default deployment:** Mac laptop runs GrandMA3 onPC + `sekonic-bridge` on `127.0.0.1`; C-7000 USB on same Mac
+- **Pi optional:** only when console and meter are on different machines (stage split)
+- **Phase 6 docs:** macOS runbook before Pi VLAN runbook
+- **Phase 7 UAT:** sign off on macOS path first; Pi secondary
+- **Phase 5 UAT:** deferred; resume with macOS localhost when ready (`/gsd-verify-work 5`)
 
 ## Phase 5 execution summary
 

@@ -20,7 +20,7 @@ expected: |
   Main menu → Bridge Status shows reachable bridge with Meter, Status, Device, Protocol, Trigger lines.
   An Auth line appears (Required with key configured, Required — add bridge_api_key, or Not required).
   If the bridge has a recent error, a Last err line shows the message.
-awaiting: deferred — user will resume later
+awaiting: deferred — user will resume later (primary test env: macOS onPC + 127.0.0.1)
 
 ## Tests
 
