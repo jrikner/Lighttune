@@ -106,17 +106,30 @@ Plans:
 
 ### Phase 4: Thin Bridge (Pi/Arduino)
 
-**Goal**: Stage device is transport-only: USB Sekonic read, HTTP JSON response, health status — no calibration or wizard logic on Pi.
+**Goal**: Stage device is transport-only: USB Sekonic read, HTTP JSON response, health status — no calibration logic on Pi. **In-plugin setup wizard preserved** (`/discover`, `/capture`, `/learn_trigger`).
 **Depends on**: Phase 1 (may parallelize with Phases 2–3 after cherry-picks land)
-**Requirements**: MTR-01, MTR-02, MTR-07
+**Requirements**: MTR-01, MTR-02, MTR-07, MTR-08
 **Success Criteria** (what must be TRUE):
 
-  1. Bridge exposes only `/status`, `/measure`, and minimal `/discover` (USB present) on show LAN (default port 8765)
+  1. Bridge serves core routes `/status`, `/measure`, `/discover` plus setup routes `/capture`, `/learn_trigger` for in-plugin wizard on show LAN (default port 8765)
   2. C-7000 read via USB bulk; returns raw `{ cct, duv, cri, r9, tlci? }` — no color math, goals, or SetColor on device
   3. When `bridge_api_key` is set, bridge rejects requests without matching `X-Bridge-Key` header; plugin sends key from `config.json`
-  4. Mock mode returns realistic readings for dev without hardware
+  4. Mock mode returns realistic readings for dev without hardware; setup routes succeed in mock mode
 
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+**Wave 1**
+
+- [ ] 04-01-PLAN.md — Bulk driver rename + MeterBackend + packaging (MTR-02)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 04-02-PLAN.md — API key auth bridge + plugin + pytest (MTR-08)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 04-03-PLAN.md — Setup internal thinning + validation gate (MTR-01, MTR-07, D-75)
 
 ### Phase 5: MA3 ↔ HTTP Integration
 

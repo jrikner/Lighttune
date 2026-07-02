@@ -3,16 +3,16 @@ gsd_state_version: 1.0
 milestone: v0.4
 milestone_name: milestone
 current_phase: 4
-current_phase_name: Thin Bridge (Pi/Arduino
-status: planning
-stopped_at: Phase 4 context gathered
-last_updated: "2026-07-02T00:30:16.578Z"
+current_phase_name: Thin Bridge (Pi/Arduino)
+status: ready_to_execute
+stopped_at: Phase 4 planned
+last_updated: "2026-07-02T14:00:00.000Z"
 last_activity: 2026-07-02
-last_activity_desc: Phase 4 context revised — in-plugin setup retained for base version
+last_activity_desc: Phase 4 planned via /gsd-plan-phase 4 (3 plans, 3 waves)
 progress:
   total_phases: 7
   completed_phases: 3
-  total_plans: 9
+  total_plans: 12
   completed_plans: 9
   percent: 43
 ---
@@ -26,29 +26,19 @@ progress:
 
 ## Current Position
 
-Phase: 4 of 7 (Thin Bridge (Pi/Arduino))
-Plan: Not started
-Status: Ready to plan (`/gsd-plan-phase 4`)
-Last activity: 2026-07-02 — Phase 4 context revised (keep in-plugin setup)
+Phase: 4 of 7 (Thin Bridge)
+Plan: 0 of 3 (04-01 next)
+Status: Ready to execute (`/gsd-execute-phase 4`)
+Last activity: 2026-07-02 — Phase 4 planned (RESEARCH + 3 PLAN files)
 
 Progress: [██████░░░░] 43%
 
-## Phase 4 locked decisions (revised)
+## Phase 4 locked decisions
 
-- In-plugin Bridge Setup wizard must remain for base version
-- Routes: `/discover`, `/capture`, `/learn_trigger`; setup flags on `/status`
-- Thin bridge = no calibration on Pi + bulk rename — not removing setup HTTP API
-
-## Phase 3 Outcomes
-
-- `tests/run.lua` + domain split; 139 PASS host suite
-- Golden fixtures + pytest bridge routes (mock meter)
-- `.github/workflows/ci.yml` on `claude/lighttune-main` and `cursor/**`
+- In-plugin Bridge Setup wizard must remain (`/discover`, `/capture`, `/learn_trigger`)
+- Thin bridge = bulk rename + auth + internal cleanup — not removing setup HTTP API
+- MTR-08: X-Bridge-Key on all routes when configured
 
 ## Session Continuity
 
-**Last session:** 2026-07-02T00:30:16.572Z
-**Stopped at:** Phase 4 context gathered
-**Resume file:** .planning/phases/04-thin-bridge-pi-arduino/04-CONTEXT.md
-
-Resume: `/gsd-plan-phase 4` or `/gsd-discuss-phase 4`
+Resume file: `.planning/phases/04-thin-bridge-pi-arduino/04-01-PLAN.md`
