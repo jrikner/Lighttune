@@ -1,0 +1,39 @@
+name: Lighttune CI
+
+on:
+  push:
+    branches:
+      - claude/lighttune-main
+      - 'cursor/**'
+  pull_request:
+    branches:
+      - claude/lighttune-main
+      - 'cursor/**'
+  workflow_dispatch:
+
+jobs:
+  host-lua:
+    name: Host Lua tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Lua 5.4
+        run: sudo apt-get update && sudo apt-get install -y lua5.4
+      - name: Run host test suite
+        run: lua5.4 tests/run.lua
+
+  bridge-pytest:
+    name: Bridge pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r sekonic-bridge/requirements.txt -r sekonic-bridge/requirements-dev.txt
+      - name: Run bridge route tests
+        run: pytest tests/test_bridge_routes.py -v --tb=short
+        timeout-minutes: 5

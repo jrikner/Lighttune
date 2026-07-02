@@ -1,0 +1,10 @@
+{
+  "status": "ok",
+  "meter": "C-7000",
+  "connected": true,
+  "version": "0.5.0-replan",
+  "device_configured": true,
+  "protocol_captured": true,
+  "trigger_discovered": true,
+  "_note": "uptime_s and last_error are dynamic — tests assert type/range only"
+}
