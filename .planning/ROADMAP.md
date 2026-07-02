@@ -224,11 +224,20 @@ Plans:
   3. Operator completes one fixture group calibration in under five minutes using remote measure with broadcast-grade metric targets met or explicitly accepted
   4. *(Secondary)* Pi stage-split topology smoke-tested or documented as optional install path
 
-**Plans**: TBD
-
 **Research flag**: macOS pyusb/libusb permissions and Sekonic USB stability on Apple Silicon; TLCI field presence across C-7000 firmware versions; closed-loop correction math if auto-loop convergence is below acceptance threshold.
 
 **UAT default environment**: Mac laptop — not Pi — unless operator explicitly tests stage-split topology.
+
+**Plans**: 2 plans
+
+Plans:
+**Wave 1**
+
+- [ ] 07-01-PLAN.md — UAT checklist + evidence convention + mock smoke + deterministic LuaSocket check (TOP-01, UAT-02)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 07-02-PLAN.md — hardware run + timing + error-path proof + Phase 5 deferred tests (UAT-01, UAT-03, TOP-01)
 
 ## Progress
 
@@ -243,7 +252,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 (Phase 4 
 | 4. Pi Bridge Production | 3/3 | Complete   | 2026-07-02 |
 | 5. MA3 ↔ HTTP Integration | 3/3 | Complete   | 2026-07-02 |
 | 6. Operator UX, Docs & Show Readiness | 0/3 | Planned | - |
-| 7. Console UAT & Hardware Validation | 0/TBD | Not started | - |
+| 7. Console UAT & Hardware Validation | 0/2 | Planned | - |
 
 ---
 *Roadmap created: 2026-07-01 — Lighttune replan milestone*

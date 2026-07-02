@@ -7,3 +7,10 @@ config.json
 # Local measurement logs
 data/fixture_log.json
 data/measurements/*.json
+
+# Local bridge/runtime artifacts (never commit)
+bridge.log
+sekonic-bridge/device_config.json
+sekonic-bridge/__pycache__/
+tests/__pycache__/
+.venv/
