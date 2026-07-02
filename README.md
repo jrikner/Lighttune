@@ -6,9 +6,11 @@ Calibrate fixture groups on your GrandMA3 console using measurements from a
 **Sekonic C-700, C-800, or C-7000 spectromaster**. Designed for TV and broadcast
 productions where colour accuracy and consistency across groups is critical.
 
-v0.5.0-replan adds a **Raspberry Pi HTTP bridge** so a C-7000 on stage can be
-triggered from FOH over the show LAN. Manual meter entry remains available for
-all supported meters.
+v0.5.0-replan adds a **thin HTTP bridge** so a C-7000 can be triggered from the plugin.
+**Primary path:** run `sekonic-bridge` on the **same Mac** as GrandMA3 onPC with the meter
+plugged in locally (`bridge_ip: 127.0.0.1`) — no Raspberry Pi required. A Pi on stage
+remains optional when console and meter are on different machines. Manual meter entry
+remains available for all supported meters.
 
 ---
 
@@ -21,7 +23,7 @@ The plugin walks you through a measurement-driven calibration workflow:
 3. Set session goals once: target Kelvin, CRI / R9 / TLCI goals, calibration mode
 4. Select a fixture group — make/model are read automatically from the MA3 patch
 5. If historical data exists for the fixture, pre-apply the best known correction
-6. Measure: enter Sekonic readings manually **or** trigger remote C-7000 via the Pi bridge
+6. Measure: enter Sekonic readings manually **or** trigger remote C-7000 via the bridge (macOS localhost or Pi on LAN)
 7. Review the quality assessment, correction, and feature-aware hints
 8. Apply — the plugin sets the corrected chromaticity on the group
 9. Re-measure and repeat until happy with the group

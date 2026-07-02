@@ -1,10 +1,28 @@
 # Sekonic Bridge — Remote Measurement Server
 
-Lighttune add-on that connects a **Sekonic C-7000 Spectromaster** to the show network so the GrandMA3 console can trigger measurements and read values automatically — without the operator leaving FOH.
+Lighttune add-on that connects a **Sekonic C-7000 Spectromaster** to GrandMA3 so the plugin can trigger measurements and read values automatically.
+
+## Primary setup — macOS + onPC (recommended)
+
+When **GrandMA3 onPC and the C-7000 share one Mac**, you do **not** need a Raspberry Pi. Run this bridge on the same machine and point the plugin at localhost:
+
+```
+[C-7000] ──USB──► [Mac: sekonic-bridge :8765]
+                        ▲ HTTP 127.0.0.1
+                        │
+              [GrandMA3 onPC — same Mac]
+```
+
+1. Install Python deps and run `sekonic-bridge` on the Mac (see Setup below).
+2. Plug the C-7000 into the Mac via USB.
+3. In plugin `config.json`: `"bridge_ip": "127.0.0.1"`, `"bridge_port": 8765`.
+4. Main menu → **Bridge Status** to confirm connection.
+
+Use the Pi path below only when the console and meter are on **different** machines (FOH console, meter on stage).
 
 ---
 
-## How It Works
+## How It Works (stage-split — optional Pi)
 
 ```
 [Sekonic C-7000]
