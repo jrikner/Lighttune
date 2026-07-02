@@ -2,19 +2,19 @@
 gsd_state_version: 1.0
 milestone: v0.4
 milestone_name: milestone
-current_phase: 6
-current_phase_name: Operator UX, Docs & Show Readiness
+current_phase: 7
+current_phase_name: Console UAT & Hardware Validation
 status: ready_to_execute
-stopped_at: Phase 6 execution — Wave 1 macOS runbook + config.lua
-last_updated: "2026-07-02T23:45:00.000Z"
+stopped_at: Phase 7 planned — 2 plans (Wave 1 checklist, Wave 2 hardware run)
+last_updated: "2026-07-02T07:55:00.000Z"
 last_activity: 2026-07-02
-last_activity_desc: Phase 6 planned — 3 plans (macOS docs, patch/apply, ui modularization)
+last_activity_desc: Phase 7 planned — 2 plans (ship gate UAT + evidence bundle)
 progress:
   total_phases: 7
   completed_phases: 5
-  total_plans: 18
+  total_plans: 20
   completed_plans: 15
-  percent: 71
+  percent: 75
 ---
 
 # Project State
@@ -22,16 +22,16 @@ progress:
 ## Project Reference
 
 **Core value:** FOH calibration in under five minutes with broadcast-grade targets.
-**Current focus:** Phase 6 — Operator UX, Docs & Show Readiness (**macOS onPC runbook is top priority**)
+**Current focus:** Phase 7 — Console UAT & Hardware Validation (**macOS onPC + localhost bridge ship gate**)
 
 ## Current Position
 
-Phase: 6 of 7 (Operator UX, Docs & Show Readiness)
-Plan: 0 of 3 planned
-Status: Ready to execute (`/gsd-execute-phase 6`)
-Last activity: 2026-07-02 — Phase 6 planned (TOP-01 macOS runbook Wave 1)
+Phase: 7 of 7 (Console UAT & Hardware Validation)
+Plan: 0 of 2 planned
+Status: Ready to execute (`/gsd-execute-phase 7`)
+Last activity: 2026-07-02 — Phase 7 planned (UAT checklist + hardware run)
 
-Progress: [█████████░] 71%
+Progress: [█████████░] 75%
 
 ## Locked decision — macOS primary (TOP-01, 2026-07-02)
 
@@ -50,4 +50,4 @@ Progress: [█████████░] 71%
 
 ## Session Continuity
 
-Resume file: `/gsd-execute-phase 6`
+Resume file: `/gsd-execute-phase 7`
