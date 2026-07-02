@@ -13,7 +13,7 @@ Brownfield replan: cherry-pick proven commits onto main, keep **one GrandMA3 plu
 
 - [ ] **Phase 1: Canonical Merge & Baseline** - Single truthful source tree with aligned docs, version, and config paths
 - [ ] **Phase 2: Plugin Hardening & Test Seams** - Single-plugin layout; extract only what host tests require; hardened JSON in-plugin
-- [ ] **Phase 3: Shared Test Strategy & CI** - Host Lua tests, bridge pytest, golden fixtures, GitHub workflow
+- [x] **Phase 3: Shared Test Strategy & CI** - Host Lua tests, bridge pytest, golden fixtures, GitHub workflow (2026-07-02)
 - [ ] **Phase 4: Thin Bridge (Pi/Arduino)** - Minimal HTTP server: USB read, raw JSON return, mock for dev — no calibration logic on device
 - [ ] **Phase 5: MA3 ↔ HTTP Integration** - bridge_client, remote measure, setup wizard, auto-loop
 - [ ] **Phase 6: Operator UX, Docs & Show Readiness** - v0.4 workflow modularized, patch UX, runbooks
@@ -94,15 +94,15 @@ Plans:
 Plans:
 **Wave 1**
 
-- [ ] 03-01-PLAN.md — tests/run.lua + split host tests + root wrapper (TST-01)
+- [x] 03-01-PLAN.md — tests/run.lua + split host tests + root wrapper (TST-01)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 03-02-PLAN.md — Golden fixtures + bridge pytest mock routes (TST-02, TST-03)
+- [x] 03-02-PLAN.md — Golden fixtures + bridge pytest mock routes (TST-02, TST-03)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 03-03-PLAN.md — GitHub Actions CI workflow (TST-04)
+- [x] 03-03-PLAN.md — GitHub Actions CI workflow (TST-04)
 
 ### Phase 4: Thin Bridge (Pi/Arduino)
 
@@ -177,7 +177,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 (Phase 4 
 |-------|----------------|--------|-----------|
 | 1. Canonical Merge & Baseline | 3/3 | Complete | 2026-07-01 |
 | 2. Plugin Hardening & Test Seams | 3/3 | Executed | 2026-07-02 |
-| 3. Shared Test Strategy & CI | 0/TBD | Not started | - |
+| 3. Shared Test Strategy & CI | 3/3 | Complete    | 2026-07-02 |
 | 4. Pi Bridge Production | 0/TBD | Not started | - |
 | 5. MA3 ↔ HTTP Integration | 0/TBD | Not started | - |
 | 6. Operator UX, Docs & Show Readiness | 0/TBD | Not started | - |

@@ -55,10 +55,10 @@
 
 ### Testing & quality gates
 
-- [ ] **TST-01**: Host tests run via `lua5.4` against shared modules (126+ color-math assertions preserved)
-- [ ] **TST-02**: Bridge route tests via pytest/httpx against mock meter
-- [ ] **TST-03**: Golden JSON fixtures for bridge responses and fixture DB edge cases
-- [ ] **TST-04**: CI workflow runs host Lua tests and bridge pytest on push
+- [x] **TST-01**: Host tests run via `lua5.4` against shared modules (126+ color-math assertions preserved)
+- [x] **TST-02**: Bridge route tests via pytest/httpx against mock meter
+- [x] **TST-03**: Golden JSON fixtures for bridge responses and fixture DB edge cases
+- [x] **TST-04**: CI workflow runs host Lua tests and bridge pytest on push
 
 ### Hardware validation
 
@@ -127,10 +127,10 @@ Deferred to future release.
 | UX-03 | Phase 6 | Pending |
 | UX-04 | Phase 6 | Pending |
 | UX-05 | Phase 6 | Pending |
-| TST-01 | Phase 3 | Pending |
-| TST-02 | Phase 3 | Pending |
-| TST-03 | Phase 3 | Pending |
-| TST-04 | Phase 3 | Pending |
+| TST-01 | Phase 3 | Complete |
+| TST-02 | Phase 3 | Complete |
+| TST-03 | Phase 3 | Complete |
+| TST-04 | Phase 3 | Complete |
 | UAT-01 | Phase 7 | Pending |
 | UAT-02 | Phase 7 | Pending |
 | UAT-03 | Phase 7 | Pending |
