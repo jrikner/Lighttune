@@ -41,16 +41,18 @@ local function load_domain_modules()
     end
 
     return {
-        color_math  = try_require("color_math"),
-        fixture_db  = try_require("fixture_db"),
-        goals       = try_require("goals"),
+        color_math     = try_require("color_math"),
+        fixture_db     = try_require("fixture_db"),
+        goals          = try_require("goals"),
+        bridge_client  = try_require("bridge_client"),
     }
 end
 
 local domain = load_domain_modules()
-local color_math  = domain.color_math
-local fixture_db  = domain.fixture_db
-local goals       = domain.goals
+local color_math     = domain.color_math
+local fixture_db     = domain.fixture_db
+local goals          = domain.goals
+local bridge_client  = domain.bridge_client
 local QUALITY     = goals.QUALITY
 local GOAL_MAX    = goals.GOAL_MAX
 local GOAL_MIN    = goals.GOAL_MIN
@@ -86,7 +88,7 @@ local STAR = "\xe2\x98\x85"
 --------------------------------------------------------------------------------
 -- SECTION 3: UI HELPERS
 -- Forward declarations for bridge functions (defined in Section 2c, below).
-local _http_request
+local format_bridge_error
 local bridge_fetch_measurement
 local run_bridge_setup
 local show_bridge_status
@@ -398,8 +400,9 @@ local function get_measurement_params(display, attempt, goals, hist, config)
     local track_tlci = goals.tlci and goals.tlci.mode~=GOAL_SKIP
     local meter_name = (goals.meter==METER_C700) and "C-700/C-800" or "C-7000"
 
-    -- ── Remote bridge mode ────────────────────────────────────────────────────
-    if config and config.bridge_ip and config.bridge_ip ~= "" then
+    -- ── Remote bridge mode (C-7000 session meter only — D-91) ───────────────
+    if config and config.bridge_ip and config.bridge_ip ~= ""
+       and goals.meter == METER_C7000 then
         ::bridge_retry::
         local mode = MessageBox({
             title   = "Measurement" .. suffix,
@@ -459,6 +462,9 @@ local function get_measurement_params(display, attempt, goals, hist, config)
             end
         end
         -- mode == 2 or bridge fallback → continue to manual entry
+    elseif config and config.bridge_ip and config.bridge_ip ~= ""
+       and goals.meter == METER_C700 and attempt == 1 then
+        -- D-92: bridge configured but C-700/C-800 session — manual only
     end
     -- ── Manual entry ──────────────────────────────────────────────────────────
 
@@ -837,114 +843,71 @@ local function show_fixture_history(display, data_dir)
 end
 
 --------------------------------------------------------------------------------
--- SECTION 2c: BRIDGE NETWORKING (LuaSocket HTTP)
+-- SECTION 2c: BRIDGE NETWORKING → lua/bridge_client.lua
 --
 -- GrandMA3 Lua does NOT support io.popen() / os.execute() / curl.
--- However lua.ftp IS documented (from LuaSocket), meaning require("socket")
--- TCP is available. We use raw HTTP/1.0 over TCP to talk to the Pi bridge.
+-- HTTP/1.0 over LuaSocket TCP is handled in bridge_client.lua.
 --------------------------------------------------------------------------------
 
--- Minimal HTTP client using LuaSocket (available in GrandMA3 via lua.ftp).
--- Returns: status_code (number), body (string)   on success
---          nil, err_string                        on connection failure
-_http_request = function(method, host, port, path, timeout_s, api_key)
-    local ok, socket = pcall(require, "socket")
-    if not ok then return nil, "luasocket_unavailable" end
-
-    local tcp = socket.tcp()
-    tcp:settimeout(timeout_s or 5)
-
-    local conn_ok, conn_err = tcp:connect(host, port)
-    if not conn_ok then
-        tcp:close()
-        return nil, "connection_refused: " .. tostring(conn_err)
+format_bridge_error = function(err_result, config)
+    if type(err_result) == "string" then return err_result end
+    if not err_result or type(err_result) ~= "table" then
+        return "Unknown bridge error"
     end
+    local kind = err_result.kind or "unknown"
+    local msg  = err_result.message or "Unknown error"
+    local hint = err_result.hint
+    local ip   = config and config.bridge_ip or "?"
 
-    local header_lines = {
-        string.format("Host: %s", host),
-        "Content-Length: 0",
-    }
-    if api_key and api_key ~= "" then
-        header_lines[#header_lines + 1] = string.format("X-Bridge-Key: %s", api_key)
+    if kind == "unauthorized" then
+        return "Check bridge_api_key in config.json matches Pi BRIDGE_API_KEY"
+            .. (hint and ("\n\n" .. hint) or "")
     end
-    local req = string.format(
-        "%s %s HTTP/1.0\r\n%s\r\n\r\n",
-        method, path, table.concat(header_lines, "\r\n"))
-    tcp:send(req)
-
-    tcp:settimeout(timeout_s or 38)
-    local chunks = {}
-    repeat
-        local chunk = tcp:receive(4096)
-        if chunk then chunks[#chunks + 1] = chunk end
-    until not chunk
-    tcp:close()
-
-    local full   = table.concat(chunks)
-    local status = tonumber(full:match("HTTP/%d%.%d (%d+)"))
-    local body   = full:match("\r\n\r\n(.-)$") or ""
-    return status, body
+    if kind == "connection" then
+        return string.format("Cannot reach bridge at %s\n\n%s", ip, msg)
+    end
+    if kind == "timeout" or err_result.http_status == 504 then
+        return "Meter did not respond in time"
+            .. (hint and ("\n\n" .. hint) or "")
+    end
+    if kind == "meter_unavailable" or err_result.http_status == 503 then
+        return "Meter not connected — check USB"
+            .. (hint and ("\n\n" .. hint) or "")
+    end
+    if kind == "busy" or err_result.http_status == 409 then
+        return "Measurement already in progress"
+            .. (hint and ("\n\n" .. hint) or "")
+    end
+    if kind == "validation" or kind == "malformed" then
+        return msg
+    end
+    return msg .. (hint and ("\n\n" .. hint) or "")
 end
 
--- Trigger a measurement on the bridge. Returns measured table or nil, err.
 bridge_fetch_measurement = function(config)
-    if not config or not config.bridge_ip or config.bridge_ip == "" then
-        return nil, "no_bridge_configured"
-    end
-    local status, body = _http_request(
-        "POST", config.bridge_ip, config.bridge_port or 8765, "/measure", 38,
-        config.bridge_api_key)
-    if not status then return nil, tostring(body) end
-    if status ~= 200 then
-        return nil, body:match('"error"%s*:%s*"([^"]+)"') or ("http_" .. status)
-    end
-    local cct  = tonumber(body:match('"cct"%s*:%s*(%-?[%d%.]+)'))
-    local duv  = tonumber(body:match('"duv"%s*:%s*(%-?[%d%.]+)'))
-    local cri  = tonumber(body:match('"cri"%s*:%s*(%d+)'))
-    local r9   = tonumber(body:match('"r9"%s*:%s*(%d+)'))
-    local tlci = tonumber(body:match('"tlci"%s*:%s*(%d+)'))
-    if not cct or not duv or not cri or not r9 then
-        return nil, "malformed_response"
-    end
-    if cct < CCT_MIN or cct > CCT_MAX then return nil, "cct_out_of_range" end
-    if duv < DUV_MIN or duv > DUV_MAX then return nil, "duv_out_of_range" end
-    if cri < CRI_MIN or cri > CRI_MAX then return nil, "cri_out_of_range" end
-    if r9  < CRI_MIN or r9  > CRI_MAX then return nil, "r9_out_of_range"  end
-    return { cct=cct, duv=duv, cri=cri, r9=r9, tlci=tlci }
+    local result = bridge_client.fetch_measurement(config)
+    if result.ok then return result.data end
+    return nil, format_bridge_error(result, config)
 end
 
--- Check bridge connectivity.
--- Returns: reachable(bool), meter_connected(bool), meter_name(str|nil),
---          device_configured(bool), protocol_captured(bool), trigger_discovered(bool).
-local function bridge_check_status(config)  -- does not need forward decl (only called by Section 2c code)
+local function bridge_check_status(config)
     if not config or not config.bridge_ip or config.bridge_ip == "" then
-        return false, false, nil, false, false, false
+        return false, false, nil, false, false, false, false, nil
     end
-    local status, body = _http_request(
-        "GET", config.bridge_ip, config.bridge_port or 8765, "/status", 5,
-        config.bridge_api_key)
-    if not status or status ~= 200 then return false, false, nil, false, false, false end
-    local connected    = body:find('"connected"%s*:%s*true')            ~= nil
-    local dev_cfg      = body:find('"device_configured"%s*:%s*true')    ~= nil
-    local proto_cap    = body:find('"protocol_captured"%s*:%s*true')    ~= nil
-    local trigger_disc = body:find('"trigger_discovered"%s*:%s*true')   ~= nil
-    local meter        = body:match('"meter"%s*:%s*"([^"]+)"')
-    return true, connected, meter, dev_cfg, proto_cap, trigger_disc
+    local result = bridge_client.check_status(config)
+    if not result.ok then
+        return false, false, nil, false, false, false, false, nil
+    end
+    local d = result.data
+    return true, d.connected, d.meter, d.device_configured, d.protocol_captured,
+           d.trigger_discovered, d.auth_required, d.last_error
 end
 
--- goals.goals_met → lua/goals.lua
-
--- Run POST /learn_trigger and show result. Used by setup wizard Step 3 and
--- the "Discover Remote Trigger" button in show_bridge_status.
 _run_trigger_discovery = function(display, config)
-    local lt_status, lt_body = _http_request(
-        "POST", config.bridge_ip, config.bridge_port or 8765,
-        "/learn_trigger", 120, config.bridge_api_key)   -- 2-min timeout covers all candidates
-
-    local lt_ok  = lt_status == 200
-                   and lt_body:find('"success"%s*:%s*true') ~= nil
-    local lt_hex = lt_body and
-                   lt_body:match('"trigger_cmd_hex"%s*:%s*"([^"]+)"') or "?"
+    local result = bridge_client.learn_trigger(config)
+    local lt_body = result.ok and result.body or ""
+    local lt_ok  = result.ok and lt_body:find('"success"%s*:%s*true') ~= nil
+    local lt_hex = lt_body:match('"trigger_cmd_hex"%s*:%s*"([^"]+)"') or "?"
 
     if lt_ok then
         MessageBox({
@@ -958,8 +921,10 @@ _run_trigger_discovery = function(display, config)
             buttons = {"OK"},
         })
     else
-        local lt_err = lt_body and
-                       lt_body:match('"error"%s*:%s*"([^"]+)"') or "no_response"
+        local lt_err = format_bridge_error(result, config)
+        if result.ok and lt_body ~= "" then
+            lt_err = lt_body:match('"error"%s*:%s*"([^"]+)"') or lt_err
+        end
         MessageBox({
             title   = "Trigger Not Found",
             message = string.format(
@@ -976,7 +941,6 @@ _run_trigger_discovery = function(display, config)
     end
 end
 
--- Show bridge connectivity status and optionally launch the setup wizard.
 show_bridge_status = function(display, config)
     if not config or not config.bridge_ip or config.bridge_ip == "" then
         MessageBox({
@@ -993,8 +957,8 @@ show_bridge_status = function(display, config)
         return
     end
 
-    local reachable, connected, meter, dev_cfg, proto_cap, trigger_disc =
-        bridge_check_status(config)
+    local reachable, connected, meter, dev_cfg, proto_cap, trigger_disc,
+          auth_required, last_error = bridge_check_status(config)
 
     if not reachable then
         MessageBox({
@@ -1014,17 +978,34 @@ show_bridge_status = function(display, config)
         return
     end
 
+    local auth_line
+    if auth_required then
+        if config.bridge_api_key and config.bridge_api_key ~= "" then
+            auth_line = "Auth:     Required (key configured)"
+        else
+            auth_line = "Auth:     Required \xe2\x80\x93 add bridge_api_key to config.json"
+        end
+    else
+        auth_line = "Auth:     Not required"
+    end
+    local err_line = (last_error and last_error ~= "")
+        and string.format("Last err: %s\n", last_error) or ""
+
     local needs_setup = not dev_cfg or not proto_cap
     local msg = string.format(
         "Bridge: %s:%d\n\n"
         .."Meter:    %s\n"
         .."Status:   %s\n"
+        .."%s"
+        .."%s"
         .."Device:   %s\n"
         .."Protocol: %s\n"
         .."Trigger:  %s",
         config.bridge_ip, config.bridge_port or 8765,
         meter or "C-7000",
         connected    and "Connected"             or "Not connected",
+        auth_line .. "\n",
+        err_line,
         dev_cfg      and "Configured"            or "Not configured \xe2\x80\x93 run Setup",
         proto_cap    and "Captured"              or "Not captured \xe2\x80\x93 run Setup",
         trigger_disc and "Remote (hands-free)"   or "Physical button required")
@@ -1038,7 +1019,6 @@ show_bridge_status = function(display, config)
         })
         if r == 1 then run_bridge_setup(display, config) end
     elseif not trigger_disc then
-        -- Device and protocol are ready but remote trigger not yet discovered
         local r = MessageBox({
             title   = "Bridge Status \xe2\x80\x93 Ready (button mode)",
             message = msg
@@ -1049,7 +1029,6 @@ show_bridge_status = function(display, config)
             buttons = {"Discover Remote Trigger", "Close"},
         })
         if r == 1 then
-            -- Run trigger discovery inline (Step 3 only)
             _run_trigger_discovery(display, config)
         end
     else
@@ -1062,9 +1041,7 @@ show_bridge_status = function(display, config)
     end
 end
 
--- Step-by-step wizard: discover USB VID/PID, capture measurement protocol.
 run_bridge_setup = function(display, config)
-    -- Step 1: Discover USB device
     local step1 = MessageBox({
         title   = "Bridge Setup \xe2\x80\x93 Step 1: Discover",
         message = "The bridge will scan the USB bus on the Pi\n"
@@ -1075,20 +1052,18 @@ run_bridge_setup = function(display, config)
     })
     if step1 ~= 1 then return end
 
-    local disc_status, disc_body = _http_request(
-        "GET", config.bridge_ip, config.bridge_port or 8765, "/discover", 12,
-        config.bridge_api_key)
-
-    if not disc_status or disc_status ~= 200 then
+    local disc_result = bridge_client.discover(config)
+    if not disc_result.ok then
         MessageBox({
             title   = "Setup Failed",
             message = string.format("Could not reach bridge.\n\n%s",
-                disc_body or "No response"),
+                format_bridge_error(disc_result, config)),
             display_handle = display,
             buttons = {"OK"},
         })
         return
     end
+    local disc_body = disc_result.body
 
     local disc_ok  = disc_body:find('"configured"%s*:%s*true')  ~= nil
     local disc_mfr = disc_body:match('"manufacturer"%s*:%s*"([^"]+)"') or "Unknown"
@@ -1110,7 +1085,6 @@ run_bridge_setup = function(display, config)
         return
     end
 
-    -- Step 2: Verify connection with a test measurement
     local step2 = MessageBox({
         title   = "Bridge Setup \xe2\x80\x93 Step 2: Verify",
         message = string.format(
@@ -1128,20 +1102,18 @@ run_bridge_setup = function(display, config)
     })
     if step2 ~= 1 then return end
 
-    local cap_status, cap_body = _http_request(
-        "POST", config.bridge_ip, config.bridge_port or 8765, "/capture", 35,
-        config.bridge_api_key)
-
-    if not cap_status or cap_status ~= 200 then
+    local cap_result = bridge_client.capture(config)
+    if not cap_result.ok then
         MessageBox({
             title   = "Capture Failed",
             message = string.format("Bridge returned an error.\n\n%s",
-                cap_body or "No response"),
+                format_bridge_error(cap_result, config)),
             display_handle = display,
             buttons = {"OK"},
         })
         return
     end
+    local cap_body = cap_result.body
 
     local cap_ok    = cap_body:find('"success"%s*:%s*true')           ~= nil
     local cap_cct   = tonumber(cap_body:match('"cct"%s*:%s*(%d+)'))
@@ -1188,10 +1160,9 @@ run_bridge_setup = function(display, config)
             display_handle = display,
             buttons = {"OK"},
         })
-        return   -- cannot proceed to trigger discovery without a working response format
+        return
     end
 
-    -- Step 3: Discover remote trigger (optional — enables fully hands-free measurement)
     local step3 = MessageBox({
         title   = "Bridge Setup \xe2\x80\x93 Step 3: Remote Trigger",
         message = "Optional: discover the remote trigger command.\n\n"
@@ -1557,9 +1528,11 @@ local function main(display, ...)
             -- ── Inner loop: re-measure until happy ────────────────────────
             -- Bridge mode: auto-loops until goals met or 3 cycles exhausted.
             -- Manual mode: existing ask_group_done() behaviour unchanged.
+            -- MTR-05: auto-loop up to 3 remote cycles per group (D-86–D-90)
             local MAX_AUTO_ATTEMPTS = 3
             local bridge_active = config and config.bridge_ip
                                           and config.bridge_ip ~= ""
+                                          and goals.meter == METER_C7000
             local loop_done     = false
             local loop_count    = 0  -- cycles in the current "run"
             local user_manual   = false  -- true once user switches to manual
