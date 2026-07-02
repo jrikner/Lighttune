@@ -60,7 +60,20 @@ Plans:
   3. Fixture database uses hardened JSON parse/encode inside the plugin with append-only `fixture_log.json` and best-value flags
   4. Goals, assessment, HTTP client, and session orchestration live in the plugin — not on the bridge
 
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+**Wave 1**
+
+- [ ] 02-01-PLAN.md — Extract color_math.lua + module loader + refactor tests to require (ARCH-01, ARCH-05)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 02-02-PLAN.md — Extract fixture_db.lua + JSON hardening + wire monolith (ARCH-02, DB-01)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 02-03-PLAN.md — Extract goals.lua + remove base64 + goals_met tests + verification gate (ARCH-03)
 
 **Research flag**: Only split Lua files if host tests cannot run against a single plugin source; prefer one plugin.
 
@@ -149,8 +162,8 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 (Phase 4 
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Canonical Merge & Baseline | 0/3 | Not started | - |
-| 2. Clean Architecture — Domain Modules | 0/TBD | Not started | - |
+| 1. Canonical Merge & Baseline | 3/3 | Complete | 2026-07-01 |
+| 2. Plugin Hardening & Test Seams | 0/3 | Planned | - |
 | 3. Shared Test Strategy & CI | 0/TBD | Not started | - |
 | 4. Pi Bridge Production | 0/TBD | Not started | - |
 | 5. MA3 ↔ HTTP Integration | 0/TBD | Not started | - |
