@@ -2,19 +2,19 @@
 gsd_state_version: 1.0
 milestone: v0.4
 milestone_name: milestone
-current_phase: 2
-current_phase_name: Plugin Hardening & Test Seams
-status: ready_to_execute
-stopped_at: Phase 2 planned
-last_updated: "2026-07-02T00:15:00.000Z"
+current_phase: 3
+current_phase_name: Shared Test Strategy & CI
+status: ready_for_planning
+stopped_at: Phase 2 execution complete
+last_updated: "2026-07-02T00:30:00.000Z"
 last_activity: 2026-07-02
-last_activity_desc: Phase 2 planned via /gsd-plan-phase 2 (3 plans, 3 waves)
+last_activity_desc: Phase 2 executed on claude/lighttune-main (3/3 plans)
 progress:
   total_phases: 7
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 6
-  completed_plans: 3
-  percent: 14
+  completed_plans: 6
+  percent: 29
 ---
 
 # Project State
@@ -24,22 +24,22 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-01)
 
 **Core value:** An operator at FOH can calibrate a fixture group in under five minutes with minimal manual typing, while hitting broadcast-grade color targets (CCT, Duv, CRI, R9, TLCI).
-**Current focus:** Phase 2 — Plugin Hardening & Test Seams
+**Current focus:** Phase 3 — Shared Test Strategy & CI
 
 ## Current Position
 
-Phase: 2 of 7 (Plugin Hardening & Test Seams)
-Plan: 0 of 3 (02-01 next)
-Status: Ready to execute (`/gsd-execute-phase 2`)
-Last activity: 2026-07-02 — Phase 2 planned (RESEARCH + VALIDATION + 3 PLAN files)
+Phase: 3 of 7 (Shared Test Strategy & CI)
+Plan: Not started
+Status: Ready for planning (`/gsd-plan-phase 3`)
+Last activity: 2026-07-02 — Phase 2 executed (domain trio on main @ 8353f0a)
 
-Progress: [██░░░░░░░░] 14%
+Progress: [████░░░░░░] 29%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 3 (Phase 1)
+- Total plans completed: 6 (Phases 1–2)
 - Average duration: —
 - Total execution time: —
 
@@ -48,45 +48,32 @@ Progress: [██░░░░░░░░] 14%
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 1. Canonical Merge & Baseline | 3 | 3 | — |
+| 2. Plugin Hardening & Test Seams | 3 | 3 | — |
 
 **Recent Trend:**
 
-- Last 5 plans: 01-01, 01-02, 01-03 (Phase 1 complete)
-- Trend: Phase 1 executed on claude/lighttune-main; planning artifacts on cursor/install-gsd-core-342d
+- Last 5 plans: 01-03, 02-01, 02-02, 02-03
+- Trend: Phase 2 domain extract complete; 133 host tests green
 
 ## Accumulated Context
 
 ### Decisions
 
-Decisions are logged in PROJECT.md Key Decisions table and phase CONTEXT files.
-Recent decisions affecting current work:
-
-- Phase 1 complete: v0.5.0-replan baseline on `claude/lighttune-main` (6 cherry-picks + alignment)
-- Phase 2: **domain trio** extract (`color_math`, `fixture_db`, `goals`) — not full research layout
-- Phase 2: keep `SekonicCalibrator.lua` entry; `require` + `dofile` fallback
-- Phase 2: fixture DB JSON harden only; bridge JSON → Phase 5
-- Phase 2: remove dead base64; refactor root `test_color_math.lua` to require modules
+- Phase 2 complete: `color_math.lua`, `fixture_db.lua`, `goals.lua` on main
+- Single plugin entry preserved; require+dofile loader
+- Fixture DB JSON hardened; bridge JSON deferred Phase 5
+- Entry file 1749 lines (297 net reduction from 2046)
 
 ### Pending Todos
 
-- Run `/gsd-execute-phase 2` on `claude/lighttune-main`
+- Run `/gsd-plan-phase 3` for CI and unified test runner
 
 ### Blockers/Concerns
 
-- MA3 `require` path behavior unverified on physical console — mitigated by dofile fallback; full verify in Phase 7 UAT
-- Planning branch Lua still v0.4 (~1,431 lines) — Phase 2 execution must checkout `claude/lighttune-main`
-
-## Deferred Items
-
-| Category | Item | Status | Deferred At |
-|----------|------|--------|-------------|
-| Phase 5 | bridge_client.lua + bridge JSON harden | Planned Phase 5 | 2026-07-01 |
-| Phase 5–6 | UI/calibration module split | Planned Phase 5–6 | 2026-07-01 |
-| Phase 3 | tests/ directory + CI runner | Planned Phase 3 | 2026-07-01 |
-| v2 | Native Sekonic HTTP, bridge HMAC, community sync | Planned v2 | 2026-07-01 |
+- MA3 `require` on physical console unverified — dofile fallback in place; Phase 7 UAT
 
 ## Session Continuity
 
 Last session: 2026-07-02
-Stopped at: Phase 2 planned — ready for `/gsd-execute-phase 2`
-Resume file: .planning/phases/02-plugin-hardening-test-seams/02-01-PLAN.md
+Stopped at: Phase 2 complete — ready for `/gsd-plan-phase 3`
+Resume file: .planning/phases/02-plugin-hardening-test-seams/02-03-SUMMARY.md

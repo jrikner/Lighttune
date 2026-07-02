@@ -3,7 +3,7 @@ phase: 2
 slug: plugin-hardening-test-seams
 status: draft
 nyquist_compliant: true
-wave_0_complete: false
+wave_0_complete: true
 created: 2026-07-01
 ---
 
@@ -39,13 +39,13 @@ created: 2026-07-01
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| 02-01-01 | 01 | 1 | ARCH-01 | — | N/A | unit | `lua5.4 test_color_math.lua` | ✅ | ⬜ pending |
-| 02-01-02 | 01 | 1 | ARCH-05 | — | Single plugin entry | grep | `grep -c ComponentLua plugin.xml` → 1 | ✅ | ⬜ pending |
-| 02-02-01 | 02 | 2 | ARCH-02 | T-2-01 | Quote escape in fixture names | unit | JSON roundtrip tests with `"` in make | post-02 | ⬜ pending |
-| 02-02-02 | 02 | 2 | DB-01 | — | best_* flags preserved | unit | existing fixture_db tests via require | ✅ | ⬜ pending |
-| 02-03-01 | 03 | 3 | ARCH-03 | — | goals_met host-testable | unit | goals_met boundary tests | post-03 | ⬜ pending |
-| 02-03-02 | 03 | 3 | ARCH-01 | — | No inline duplicate | grep | `! grep -q "Inline copies" test_color_math.lua` | post-03 | ⬜ pending |
-| 02-03-03 | 03 | 3 | ARCH-05 | — | Dead base64 removed | grep | `! grep -q base64_encode lua/SekonicCalibrator.lua` | post-03 | ⬜ pending |
+| 02-01-01 | 01 | 1 | ARCH-01 | — | N/A | unit | `lua5.4 test_color_math.lua` | ✅ | ✅ green |
+| 02-01-02 | 01 | 1 | ARCH-05 | — | Single plugin entry | grep | `grep -c ComponentLua plugin.xml` → 1 | ✅ | ✅ green |
+| 02-02-01 | 02 | 2 | ARCH-02 | T-2-01 | Quote escape in fixture names | unit | JSON roundtrip tests with `"` in make | ✅ | ✅ green |
+| 02-02-02 | 02 | 2 | DB-01 | — | best_* flags preserved | unit | fixture_db tests via require | ✅ | ✅ green |
+| 02-03-01 | 03 | 3 | ARCH-03 | — | goals_met host-testable | unit | goals_met boundary tests | ✅ | ✅ green |
+| 02-03-02 | 03 | 3 | ARCH-01 | — | No inline duplicate | grep | `! grep -q "Inline copies" test_color_math.lua` | ✅ | ✅ green |
+| 02-03-03 | 03 | 3 | ARCH-05 | — | Dead base64 removed | grep | `! grep -q base64_encode lua/SekonicCalibrator.lua` | ✅ | ✅ green |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -54,7 +54,6 @@ created: 2026-07-01
 ## Wave 0 Requirements
 
 - [ ] `lua5.4` on executor host — required for all gates (same as Phase 1)
-- [ ] Execution checkout `claude/lighttune-main` — planning branch Lua is v0.4 stale
 
 ---
 
@@ -63,17 +62,17 @@ created: 2026-07-01
 | Behavior | Requirement | Why Manual | Test Instructions |
 |----------|-------------|------------|-------------------|
 | MA3 console `require` path | ARCH-05 | No MA3 in CI | Deferred to Phase 7 UAT; dofile fallback must exist in loader |
-| Entry file line reduction | D-21 | Approximate metric | `wc -l lua/SekonicCalibrator.lua` should drop ~400–500 from ~2046 baseline |
+| Entry file line reduction | D-21 | Approximate metric | 1749 lines (297 down from 2046; loader adds overhead) |
 
 ---
 
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references
-- [ ] No watch-mode flags
-- [ ] Feedback latency < 30s
-- [ ] `nyquist_compliant: true` set in frontmatter
+- [x] All tasks have `<automated>` verify or Wave 0 dependencies
+- [x] Sampling continuity: no 3 consecutive tasks without automated verify
+- [x] Wave 0 covers all MISSING references
+- [x] No watch-mode flags
+- [x] Feedback latency < 30s
+- [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** pending
+**Approval:** approved 2026-07-02

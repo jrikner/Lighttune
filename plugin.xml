@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <GMA3 DataVersion="1.6.1.3">
-  <Plugin Name="SekonicCalibrator" Author="Lighttune" Version="0.1.0">
+  <Plugin Name="SekonicCalibrator" Author="Lighttune" Version="0.5.0">
     <ComponentLua Name="SekonicCalibrator" FileName="lua/SekonicCalibrator.lua" />
   </Plugin>
 </GMA3>

@@ -1,0 +1,23 @@
+[Unit]
+Description=Sekonic C-7000 Bridge Server (Lighttune)
+Documentation=https://github.com/jrikner/Lighttune-0.1/tree/main/sekonic-bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sekonic
+Group=sekonic
+WorkingDirectory=/opt/sekonic-bridge
+ExecStart=/opt/sekonic-bridge/venv/bin/python3 server.py
+Restart=always
+RestartSec=5
+# Give the USB subsystem time to enumerate on boot
+ExecStartPre=/bin/sleep 3
+
+# Log goes to journald (view with: journalctl -u sekonic-bridge -f)
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
