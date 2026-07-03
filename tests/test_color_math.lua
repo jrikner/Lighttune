@@ -12,6 +12,8 @@ local rgb_to_hsb = color_math.rgb_to_hsb
 local rate_quality = color_math.rate_quality
 local rate_duv = color_math.rate_duv
 local gel_hint = color_math.gel_hint
+local pick_wheel_slot = color_math.pick_wheel_slot
+local compute_channel_adjustments = color_math.compute_channel_adjustments
 local QUALITY = goals.QUALITY
 
 return function(M)
@@ -78,4 +80,24 @@ return function(M)
     do local h=gel_hint(-0.012); M.assert_equal("Duv -0.012=1/2 Plus", h and h:sub(1,10) or nil,"1/2 Plus G")  end
     do local h=gel_hint(0.020);  M.assert_equal("Duv +0.020=Full Minus",h and h:sub(1,12) or nil,"Full Minus G") end
     do local h=gel_hint(-0.020); M.assert_equal("Duv -0.020=Full Plus", h and h:sub(1,11) or nil,"Full Plus G")  end
+
+    M.section("pick_wheel_slot")
+    local slots = { "Open", "1/4 CTO", "1/2 Minus Green", "Full CTB" }
+    M.assert_equal("CTO slot", pick_wheel_slot(slots, "cto"), "1/4 CTO")
+    M.assert_equal("CTB slot", pick_wheel_slot(slots, "ctb"), "Full CTB")
+    M.assert_equal("Minus green", pick_wheel_slot(slots, "minus_green"), "1/2 Minus Green")
+
+    M.section("compute_channel_adjustments")
+    local caps_tint = { has_tint = true, has_cto = false, has_ctb = false }
+    do
+        local ch = compute_channel_adjustments({ delta_cct = 0, delta_duv = 0.01 }, caps_tint, { tint = 0 })
+        M.assert_equal("tint changed", ch.tint_changed, true)
+        M.assert_near("tint value", ch.tint, -3.5, 0.5)
+    end
+    local caps_cto = { has_tint = false, has_cto = true, has_ctb = false }
+    do
+        local ch = compute_channel_adjustments({ delta_cct = 500, delta_duv = 0 }, caps_cto, { cto = 0 })
+        M.assert_equal("cto changed", ch.cto_changed, true)
+        M.assert_near("cto value", ch.cto, 20, 0.5)
+    end
 end

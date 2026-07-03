@@ -21,14 +21,13 @@ The plugin walks you through a measurement-driven calibration workflow:
 1. Choose from the main menu: **Start Calibration**, **View Fixture History**, or **Bridge Status**
 2. Choose your Sekonic meter model (C-700/C-800 or C-7000)
 3. Set session goals once: target Kelvin, CRI / R9 / TLCI goals, calibration mode
-4. Select a fixture group — make/model are read automatically from the MA3 patch
+4. Select one or more fixture groups — add them individually or comma-separated (e.g. `1, 3, Front Wash`); each group is calibrated at every Kelvin target
 5. If historical data exists for the fixture, pre-apply the best known correction
 6. Measure: enter Sekonic readings manually **or** trigger remote C-7000 via the bridge (macOS localhost or Pi on LAN)
 7. Review the quality assessment, correction, and feature-aware hints
 8. Apply — the plugin sets the corrected chromaticity on the group
-9. Re-measure and repeat until happy with the group
-10. Move to the next group
-11. End-of-session summary shows all groups and goal pass/fail
+9. The plugin moves through each selected group automatically
+10. End-of-session summary shows all groups and goal pass/fail
 
 Calibration data is saved locally in `data/fixture_log.json`. Share the file
 manually if you want to contribute fixture data to others.
@@ -47,7 +46,7 @@ manually if you want to contribute fixture data to others.
 | **CRI / R9 / TLCI goals** | Track each metric individually — set a minimum threshold or "as high as possible" |
 | **Conditional gel hints** | Gel suggestions only shown when the fixture has color-wheel filter slots, or when no Tint channel is available (physical gel is the only option), or when deviation is extreme (> ±0.020) |
 | **Feature-aware console hints** | Fixture capabilities from the **MA3 Patch API** — Tint, CTB, CTO, and color wheel hints only when supported |
-| **Fixture name from patch** | Make/model are auto-read from the MA3 patch for the selected group (manual fallback available) |
+| **Fixture name from patch** | Make/model are auto-read from the MA3 patch for the selected group (no manual entry) |
 | **Patch manufacturer data** | Nominal CCT and CRI from FixtureType metadata (Patch API — no on-disk GDTF file access) |
 | **Historical pre-fill** | Before the first measurement, if the fixture database contains prior data, the best known correction is pre-applied to the group |
 | **Advanced Duv target** | Default 0.000 (neutral); optional custom Duv target for special production requirements |
@@ -70,95 +69,44 @@ manually if you want to contribute fixture data to others.
 
 ## Installation
 
-The repo root is **not** the plugin folder — `plugin.xml`, `SekonicCalibrator.lua`,
-`lua/`, and `data/` live loose at repo root alongside dev-only stuff (`tests/`,
-`sekonic-bridge/`, `.github/`). GrandMA3 needs those four, laid out exactly
-right (the entry script `SekonicCalibrator.lua` must sit directly beside
-`plugin.xml`; the four helper modules stay in `lua/`), in a folder **named
-exactly `SekonicCalibrator`** (the plugin code hard-codes that name when it
-looks for its own config and data). `package-plugin.sh` assembles that layout
-for you so you never have to guess which files go where.
+1. Copy the entire `SekonicCalibrator/` folder into the GrandMA3 plugin library:
 
-### Quick install (recommended)
+   **Windows:**
+   ```
+   C:\ProgramData\MALightingTechnology\gma3_library\datapools\plugins\SekonicCalibrator\
+   ```
 
-```bash
-./package-plugin.sh --install
-```
+   **macOS / Linux (show computer):**
+   ```
+   ~/MALightingTechnology/gma3_library/datapools/plugins/SekonicCalibrator/
+   ```
 
-Builds the plugin folder and copies it straight to the standard GrandMA3
-plugin library path for your OS (macOS/Linux: `~/MALightingTechnology/...`).
-Re-run it any time to upgrade — it overwrites `plugin.xml`, `SekonicCalibrator.lua`,
-and `lua/` but **never touches your `config.json` or saved data**.
+2. In GrandMA3: `Menu → Plugin Pool → Import → SekonicCalibrator`
 
-For Windows, or any non-default location, pass the path explicitly:
+3. Assign to a macro key or executor, then run by double-tapping the plugin entry.
 
-```bash
-./package-plugin.sh --install "/path/to/gma3_library/datapools/plugins"
-```
-
-Prefer to copy the files yourself (e.g. onto a different machine)? Build the
-folder without installing it:
-
-```bash
-./package-plugin.sh          # writes dist/SekonicCalibrator/
-./package-plugin.sh --zip    # also writes dist/SekonicCalibrator.zip
-```
-
-Then copy `dist/SekonicCalibrator/` (the whole folder, keeping that exact
-name) into:
-
-| OS | Plugin library path |
-|---|---|
-| Windows | `C:\ProgramData\MALightingTechnology\gma3_library\datapools\plugins\` |
-| macOS / Linux | `~/MALightingTechnology/gma3_library/datapools/plugins/` |
-
-### In GrandMA3
-
-1. `Menu → Plugin Pool → Import → SekonicCalibrator`
-2. Assign to a macro key or executor, then run by double-tapping the plugin entry.
-
-### Optional — remote C-7000 measurement
-
-Run `sekonic-bridge/setup-mac.sh` on the same Mac as onPC (primary path, no
-Pi needed), or deploy `sekonic-bridge/` to a Raspberry Pi for a stage-split
-setup — see `sekonic-bridge/README.md`. Then set `bridge_ip`/`bridge_port` in
-the plugin's `config.json` (see **Configuration** below).
+4. **Optional — remote C-7000:** Run `sekonic-bridge/setup-mac.sh` on the same Mac as onPC (primary path, no Pi needed), or deploy `sekonic-bridge/` to a Raspberry Pi for a stage-split setup (see `sekonic-bridge/README.md`), then create `config.json` at the **plugin root** with `bridge_ip` and `bridge_port`.
 
 ---
 
 ## Configuration
 
-There are **three** separate config files in this project — don't mix them up:
-
-| File | Lives where | Edited by | Purpose |
-|---|---|---|---|
-| **`config.json`** | Plugin root — `SekonicCalibrator/config.json`, next to `plugin.xml`, **not** inside `data/` | You | Tells the **GrandMA3 plugin** the bridge's address and your GitHub username |
-| **`bridge_config.json`** | `sekonic-bridge/bridge_config.json`, next to `server.py` | You (optional) | Tells the **bridge server** an API key to require, if you want auth |
-| **`device_config.json`** | Same folder as `server.py` | The bridge itself | Auto-written by `/discover` — meter VID/PID, protocol state. Never edit by hand |
-
-### `config.json` (the one you need)
-
-Copy the example into your installed plugin folder and edit it:
-
-```bash
-cp data/config.json.example ~/MALightingTechnology/gma3_library/datapools/plugins/SekonicCalibrator/config.json
-```
+Copy `data/config.json.example` to **`config.json` at the plugin root** (same
+directory as `plugin.xml`, **not** inside `data/`):
 
 ```json
 {
   "github_username": "your_github_username",
-  "bridge_ip":        "127.0.0.1",
-  "bridge_port":      8765,
-  "bridge_api_key":   ""
+  "bridge_ip":       "192.168.1.50",
+  "bridge_port":     8765
 }
 ```
 
 | Field | Purpose |
 |---|---|
 | `github_username` | Stored as `contributor` in `data/fixture_log.json` (optional) |
-| `bridge_ip` | `127.0.0.1` if the bridge runs on the same Mac as onPC (primary path); a LAN IP (e.g. `192.168.1.50`) for a Pi on a different machine |
+| `bridge_ip` | Pi bridge IP on show LAN — enables remote measure and auto-loop when set |
 | `bridge_port` | Bridge HTTP port (default **8765** if omitted) |
-| `bridge_api_key` | Only needed if the bridge has a `bridge_api_key` configured (see `sekonic-bridge/README.md`) |
 
 `config.json` is gitignored and must never contain secrets committed to git.
 
@@ -395,15 +343,55 @@ Backward-compatible alias (delegates to `tests/run.lua`):
 lua5.4 test_color_math.lua
 ```
 
-Expected: **133+ passed, 0 failed** (ROADMAP minimum: 126+).
+Expected: **308+ passed, 0 failed** (ROADMAP minimum: 126+).
 
 ### Bridge route tests (mock meter, no USB)
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r sekonic-bridge/requirements.txt -r sekonic-bridge/requirements-dev.txt
-.venv/bin/pytest tests/test_bridge_routes.py -v
+.venv/bin/pytest tests -v
 ```
+
+Expected: **37+ passed, 0 failed** — covers the FastAPI routes (`test_bridge_routes.py`,
+`test_bridge_auth.py`, `test_bridge_setup_routes.py`), the dashboard
+(`test_bridge_dashboard.py`), and the C-7000 USB protocol driver against a fake
+USB device (`test_meter_c7000_bulk.py`) — no real meter or hardware required for
+any of it.
+
+### Mock measurement data (rehearsing the calibration loop without hardware)
+
+`tests/fixtures/mock_measurement_sequences.lua` holds five realistic, physically
+-grounded attempt sequences for testing/debugging the per-fixture auto-correction
+loop when no lamps or meter are available:
+
+| Fixture              | Behavior                                                              | Outcome                                   |
+|----------------------|------------------------------------------------------------------------|--------------------------------------------|
+| `steady_converge`     | Under-responsive color-mixing servo — improves monotonically each pass | Goal met at attempt 5                       |
+| `quick_converge`      | Well-calibrated fixture — converges almost immediately                 | Goal met at attempt 2                       |
+| `plateau_stuck`       | Improves twice, then hits a mechanical/spectral hard limit             | Auto-accepted (3× stagnant) at attempt 5    |
+| `oscillate_settles`   | Over-responsive servo overshoots, swings decay and settle              | Goal met at attempt 5                       |
+| `oscillate_persistent`| Badly over-responsive servo, never damps down                         | Hard attempt cap (12) reached, unresolved   |
+
+These aren't hand-typed numbers. `tests/gen_mock_sequences.lua` generates them by
+literally driving the **real** `lua/color_math.get_correction()` (the same
+closed-loop correction the desk calls) and the **real** `lua/goals.lua`
+(`error_score` / `has_improved` / `goals_met`) against a small simulated fixture
+-response model — only *how much of a requested correction a fixture actually
+reproduces* (a per-profile `gain`) is synthetic; every applied correction and
+every pass/fail/stagnation verdict comes straight from production code. Output
+is deterministic — re-running the generator reproduces the fixture file
+byte-for-byte:
+
+```bash
+texlua tests/gen_mock_sequences.lua > tests/fixtures/mock_measurement_sequences.lua
+```
+
+`tests/test_mock_sequences.lua` (wired into `tests/run.lua`) replays every
+attempt through `goals.lua` and asserts the recorded `error_score`, `improved`,
+`goals_met`, and `stagnant_count` values still match — a regression guard so the
+mock data can't silently drift out of sync if `goals.lua`'s tolerance, epsilon,
+or scoring formula ever changes.
 
 ### Continuous integration
 

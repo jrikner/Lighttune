@@ -9,5 +9,8 @@
   "bridge_port":       8765,
 
   "_comment_bridge_api_key": "Optional shared secret when the bridge has BRIDGE_API_KEY or bridge_api_key configured",
-  "bridge_api_key":    ""
+  "bridge_api_key":    "",
+
+  "_comment_focus_preset": "Position preset (pool 2) with fixtures aimed at Sekonic — e.g. 2.12 or 12",
+  "focus_preset":      ""
 }

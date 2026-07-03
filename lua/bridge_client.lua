@@ -65,6 +65,16 @@ function M.classify_http(status, body)
             http_status = status,
         }
     end
+    if status == 422 then
+        return {
+            ok = false,
+            kind = "invalid_measurement",
+            message = err_msg,
+            hint = hint or "Sensor may be covered or aimed away from the "
+                         .."light source — uncover/aim it and try again",
+            http_status = status,
+        }
+    end
     return {
         ok = false,
         kind = "http",
@@ -110,14 +120,23 @@ function M.request(method, host, port, path, opts)
     tcp:send(req)
 
     tcp:settimeout(timeout_s)
-    local chunks = {}
-    repeat
-        local chunk = tcp:receive(4096)
-        if chunk then chunks[#chunks + 1] = chunk end
-    until not chunk
+    -- Read until the peer closes the connection. Our requests are sent as
+    -- HTTP/1.0 with no keep-alive, so the bridge (uvicorn) always closes
+    -- after writing the response — "*a" is the correct/idiomatic pattern
+    -- for that ("read everything until EOF", never errors, always returns
+    -- what it got). The previous implementation looped on receive(4096)
+    -- (an EXACT byte-count request) and only kept the first return value;
+    -- since every response here is well under 4096 bytes, the peer closes
+    -- before that many bytes arrive, so receive() returned (nil, "closed",
+    -- partial-data) and the real bytes — sitting in the discarded third
+    -- return value — were lost every single time. That produced an empty
+    -- `full` string below, which failed to match the HTTP status line and
+    -- was misreported as "invalid_http_response" even when the bridge
+    -- answered correctly.
+    local data, recv_err, partial = tcp:receive("*a")
     tcp:close()
 
-    local full   = table.concat(chunks)
+    local full   = data or partial or ""
     local status = tonumber(full:match("HTTP/%d%.%d (%d+)"))
     local body   = full:match("\r\n\r\n(.-)$") or ""
 
@@ -131,11 +150,20 @@ function M.parse_measure_body(body)
     if not body or body == "" then
         return nil, { ok = false, kind = "malformed", message = "empty_response" }
     end
+    -- cri/r9 use the same "%-?[%d%.]+" (allow leading minus) pattern as
+    -- cct/duv, not "%d+". The C-7000 reports out-of-range sentinel values
+    -- (e.g. cri=-200, r9=-200) when its sensor is covered or aimed away
+    -- from any light source; a digits-only pattern silently failed to
+    -- match those negative sentinels at all, which surfaced as a
+    -- confusing "malformed_response" instead of the accurate
+    -- "cri_out_of_range" / "r9_out_of_range" validation error produced
+    -- below (the bridge server also bounds-checks this server-side —
+    -- see C7000Bulk._parse()).
     local cct  = tonumber(body:match('"cct"%s*:%s*(%-?[%d%.]+)'))
     local duv  = tonumber(body:match('"duv"%s*:%s*(%-?[%d%.]+)'))
-    local cri  = tonumber(body:match('"cri"%s*:%s*(%d+)'))
-    local r9   = tonumber(body:match('"r9"%s*:%s*(%d+)'))
-    local tlci = tonumber(body:match('"tlci"%s*:%s*(%d+)'))
+    local cri  = tonumber(body:match('"cri"%s*:%s*(%-?[%d%.]+)'))
+    local r9   = tonumber(body:match('"r9"%s*:%s*(%-?[%d%.]+)'))
+    local tlci = tonumber(body:match('"tlci"%s*:%s*(%-?[%d%.]+)'))
     if not cct or not duv or not cri or not r9 then
         return nil, { ok = false, kind = "malformed", message = "malformed_response" }
     end

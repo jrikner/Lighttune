@@ -32,8 +32,8 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Header, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse
 import uvicorn
 
 # ── logging ──────────────────────────────────────────────────────────────────
@@ -116,6 +116,15 @@ def _save_device_config(cfg: dict) -> None:
 def _is_device_configured() -> bool:
     cfg = _load_device_config()
     return bool(cfg.get("configured"))
+
+
+ALLOWED_METER_MODELS = ["C-700", "C-800", "C-7000"]
+
+
+def _get_meter_model() -> str:
+    cfg = _load_device_config()
+    model = cfg.get("meter_model")
+    return model if model in ALLOWED_METER_MODELS else "C-7000"
 
 
 def _is_protocol_captured() -> bool:
@@ -207,17 +216,23 @@ app = FastAPI(
     description="Remote measurement bridge for Lighttune SekonicCalibrator",
     version="0.5.0-replan",
     lifespan=lifespan,
-    dependencies=[Depends(verify_bridge_key)],
 )
+# verify_bridge_key is applied per-route (not as an app-wide dependency) so
+# that GET /dashboard can be reached by a plain browser navigation (which
+# can't attach a custom X-Bridge-Key header) even when an API key is
+# configured. The dashboard page itself carries no sensitive data -- it's
+# static HTML/JS; the JSON API calls that page makes from JavaScript still
+# go through this same dependency and still require the key.
+_auth = [Depends(verify_bridge_key)]
 
 
-@app.get("/status")
+@app.get("/status", dependencies=_auth)
 async def status():
     """Return bridge health, meter connection state, and configuration status."""
     connected = _meter is not None and _meter.is_connected()
     return {
         "status":             "ok",
-        "meter":              "C-7000",
+        "meter":              _get_meter_model(),
         "connected":          connected,
         "uptime_s":           int(time.time() - _start_time),
         "last_error":         _last_error,
@@ -229,7 +244,422 @@ async def status():
     }
 
 
-@app.get("/discover")
+@app.post("/device_model", dependencies=_auth)
+async def set_device_model(request: Request):
+    """
+    Set which Sekonic meter model the bridge (and the dashboard's status
+    display) should report itself as. This is an operator-asserted label
+    persisted to device_config.json -- distinct from the auto-detected
+    VID/PID from /discover, which identifies the USB device itself.
+    Moved here from the GrandMA3 plugin (v2 plan: device model selection
+    lives in the bridge dashboard, not in a console dialog).
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail={"error": "invalid_json"})
+
+    model = body.get("model") if isinstance(body, dict) else None
+    if model not in ALLOWED_METER_MODELS:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "invalid_model",
+                    "hint": f"model must be one of {ALLOWED_METER_MODELS}"},
+        )
+
+    cfg = _load_device_config()
+    cfg["meter_model"] = model
+    _save_device_config(cfg)
+    log.info("Meter model set to %s", model)
+    return {"ok": True, "meter_model": model}
+
+
+@app.post("/restart", dependencies=_auth)
+async def restart():
+    """
+    Restart the bridge process itself, relying on the OS-level service
+    supervisor to relaunch it -- this is the "restart" button on the
+    dashboard, for when the bridge needs a clean reconnect to the meter
+    (e.g. after a USB hiccup) without SSHing into the Pi/Mac.
+
+    Exits with status 1 (not 0) deliberately: the macOS launchd unit
+    (com.lighttune.sekonic-bridge.plist) uses KeepAlive.SuccessfulExit =
+    false, which means launchd relaunches the job only on an UNSUCCESSFUL
+    exit -- a clean sys.exit(0) would be treated as "done on purpose" and
+    NOT relaunched, leaving the bridge down until someone logs in and
+    restarts it by hand. The systemd unit (sekonic-bridge.service) uses
+    Restart=always, which relaunches on any exit code, so exit(1) is safe
+    there too. The actual process exit is deferred slightly so this
+    response can flush to the client first.
+    """
+    log.warning("Restart requested via /restart -- exiting for supervisor relaunch")
+
+    async def _delayed_exit():
+        await asyncio.sleep(0.3)
+        if _meter is not None:
+            try:
+                _meter.disconnect()
+            except Exception:
+                pass
+        os._exit(1)
+
+    asyncio.get_event_loop().create_task(_delayed_exit())
+    return {"ok": True, "message": "Restarting -- the service supervisor will relaunch the bridge in a few seconds."}
+
+
+_DASHBOARD_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SEKONIC BRIDGE // LIGHTTUNE</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@800;900&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:#0d0d0d; --panel:#121212; --line:#2b2b2b; --line-2:#1e1e1e;
+    --fg:#eaeaea; --dim:#8a8a8a; --faint:#565656;
+    --red:#e61919; --green:#4af626;
+    --mono:"JetBrains Mono",ui-monospace,"SF Mono",Menlo,monospace;
+    --head:"Archivo","Helvetica Neue",Arial,sans-serif;
+  }
+  * { box-sizing:border-box; border-radius:0 !important; }
+  html,body { margin:0; }
+  body {
+    background:var(--bg); color:var(--fg);
+    font:13px/1.5 var(--mono); letter-spacing:0.02em;
+    -webkit-font-smoothing:antialiased; padding:0; position:relative;
+  }
+  /* grain */
+  body::before {
+    content:""; position:fixed; inset:0; z-index:2; pointer-events:none; opacity:0.05;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+  /* scanlines */
+  body::after {
+    content:""; position:fixed; inset:0; z-index:3; pointer-events:none;
+    background:repeating-linear-gradient(0deg, rgba(0,0,0,0) 0, rgba(0,0,0,0) 2px, rgba(0,0,0,0.22) 3px, rgba(0,0,0,0) 4px);
+  }
+  .wrap { max-width:760px; margin:0 auto; padding:26px 22px 40px; position:relative; z-index:1; }
+
+  .uppercase { text-transform:uppercase; }
+  .frame { border:1px solid var(--line); position:relative; }
+
+  .topbar { display:flex; align-items:center; justify-content:space-between;
+    padding:12px 16px; border:1px solid var(--line); border-bottom:2px solid var(--red);
+    text-transform:uppercase; letter-spacing:0.12em; }
+  .topbar .id { color:var(--fg); font-weight:700; }
+  .topbar .id b { color:var(--red); }
+  .topbar .rev { color:var(--dim); font-size:11px; }
+
+  .keyrow { display:none; gap:0; margin-top:16px; border:1px solid var(--line); }
+  .keyrow.show { display:flex; }
+  .keyrow input { flex:1; min-width:160px; }
+
+  /* macro status */
+  .macro { border:1px solid var(--line); border-top:none; padding:30px 20px 26px; position:relative; }
+  .macro .meta-top { display:flex; justify-content:space-between; align-items:center;
+    color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:0.14em; margin-bottom:18px; }
+  .macro .live { display:inline-flex; align-items:center; gap:8px; }
+  .macro .beacon { width:9px; height:9px; background:var(--faint); display:inline-block; }
+  .macro .beacon.on { background:var(--green); animation:blink 1.15s steps(1) infinite; }
+  .macro .beacon.off { background:var(--red); }
+  @keyframes blink { 50% { opacity:0.25; } }
+  .macro h1 { font-family:var(--head); font-weight:900; text-transform:uppercase;
+    font-size:clamp(3.2rem,13vw,8.5rem); line-height:0.84; letter-spacing:-0.045em; margin:0; }
+  .macro .state { margin-top:14px; font-size:clamp(0.95rem,2.6vw,1.35rem);
+    text-transform:uppercase; letter-spacing:0.18em; color:var(--dim); }
+  .macro .state b { font-weight:700; }
+  .macro .state .on { color:var(--green); } .macro .state .off { color:var(--red); }
+  .macro .sub { margin-top:12px; max-width:56ch; color:var(--dim); font-size:12px;
+    text-transform:uppercase; letter-spacing:0.05em; line-height:1.6; }
+  .cross { position:absolute; color:var(--faint); font-size:14px; line-height:1; }
+  .cross.tr { top:-7px; right:-7px; } .cross.bl { bottom:-7px; left:-7px; }
+
+  /* telemetry grid */
+  .telemetry { display:grid; grid-template-columns:repeat(4,1fr); gap:1px;
+    background:var(--line); border:1px solid var(--line); border-top:none; }
+  .cell { background:var(--bg); padding:13px 15px; }
+  .cell .l { color:var(--faint); font-size:10px; text-transform:uppercase; letter-spacing:0.12em; }
+  .cell .v { margin-top:7px; font-size:14px; font-weight:500; text-transform:uppercase; letter-spacing:0.06em; }
+  .cell .v.on { color:var(--green); } .cell .v.off { color:var(--red); }
+  @media (max-width:560px) { .telemetry { grid-template-columns:repeat(2,1fr); } }
+
+  .err-line { display:none; margin-top:16px; border:1px solid var(--red); padding:11px 14px;
+    color:var(--red); font-size:12px; text-transform:uppercase; letter-spacing:0.06em; }
+  .err-line.show { display:block; }
+  .err-line b { color:var(--red); }
+
+  .sec { margin-top:26px; }
+  .sec-h { color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:0.16em;
+    padding-bottom:10px; border-bottom:1px solid var(--line); margin-bottom:2px; }
+  .sec-h b { color:var(--red); font-weight:400; }
+
+  .row { display:flex; align-items:center; gap:16px; padding:15px 2px; border-bottom:1px solid var(--line-2); }
+  .row .k { text-transform:uppercase; letter-spacing:0.05em; color:var(--fg); font-size:12px; }
+  .row .d { color:var(--faint); font-size:11px; text-transform:uppercase; letter-spacing:0.04em; margin-top:4px; }
+  .row .tag { margin-left:auto; flex:none; }
+
+  .tag { display:inline-block; font-size:11px; text-transform:uppercase; letter-spacing:0.08em;
+    padding:4px 9px; border:1px solid currentColor; color:var(--dim); }
+  .tag.ok { color:var(--fg); } .tag.warn { color:var(--red); } .tag.info { color:var(--dim); }
+
+  .controls { display:flex; align-items:stretch; gap:0; margin-top:16px; flex-wrap:wrap; }
+  input, select, .btn {
+    font:12px/1 var(--mono); text-transform:uppercase; letter-spacing:0.08em;
+    background:var(--bg); color:var(--fg); border:1px solid var(--line); padding:12px 14px;
+  }
+  input::placeholder { color:var(--faint); }
+  input:focus, select:focus { outline:none; border-color:var(--fg); }
+  .btn { cursor:pointer; background:transparent; color:var(--fg); border-color:var(--fg);
+    transition:background .08s steps(1), color .08s steps(1); }
+  .btn:hover { background:var(--fg); color:var(--bg); }
+  .btn:active { transform:translate(1px,1px); }
+  .btn.danger { color:var(--red); border-color:var(--red); }
+  .btn.danger:hover { background:var(--red); color:var(--bg); }
+  .btn + .btn { margin-left:-1px; }
+  .btn-grid { display:flex; flex-wrap:wrap; margin-top:16px; }
+
+  .msg { font-size:11px; margin-top:14px; min-height:15px; color:var(--dim);
+    text-transform:uppercase; letter-spacing:0.05em; white-space:pre-wrap; word-break:break-word; }
+  .msg.ok { color:var(--green); } .msg.err { color:var(--red); }
+  .msg.inline { margin:0 0 0 14px; align-self:center; }
+
+  .foot { margin-top:34px; padding-top:14px; border-top:2px solid var(--red);
+    color:var(--faint); font-size:10px; text-transform:uppercase; letter-spacing:0.18em;
+    display:flex; justify-content:space-between; }
+
+  .reveal { opacity:0; transform:translateY(8px);
+    transition:opacity .3s steps(5), transform .3s ease-out; transition-delay:calc(var(--i,0) * 55ms); }
+  .reveal.in { opacity:1; transform:none; }
+  @media (prefers-reduced-motion: reduce) { .reveal { opacity:1; transform:none; transition:none; } }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="topbar reveal">
+      <span class="id">SEKONIC BRIDGE <b>///</b></span>
+      <span class="rev"><span id="version">VERSION —</span></span>
+    </div>
+
+    <div id="keyRow" class="keyrow reveal">
+      <input id="apiKey" type="password" placeholder="BRIDGE KEY">
+      <button class="btn" onclick="saveKey()">UNLOCK</button>
+      <span class="msg err inline" id="keyMsg"></span>
+    </div>
+
+    <div class="macro reveal" style="--i:1">
+      <span class="cross tr">+</span><span class="cross bl">+</span>
+      <div class="meta-top">
+        <span class="live"><span class="beacon" id="beacon"></span><span id="connBadge">CHECKING</span></span>
+        <span id="connMeta"></span>
+      </div>
+      <h1 id="connModel">C-7000</h1>
+      <div class="state" id="connState"><b>CHECKING…</b></div>
+      <p class="sub" id="connSub">Reading bridge status over the show network.</p>
+    </div>
+
+    <div class="telemetry reveal" style="--i:2">
+      <div class="cell"><div class="l">METER</div><div class="v" id="tLink">--</div></div>
+      <div class="cell"><div class="l">UPTIME</div><div class="v" id="tUptime">--</div></div>
+      <div class="cell"><div class="l">VERSION</div><div class="v" id="tVersion">--</div></div>
+      <div class="cell"><div class="l">KEY</div><div class="v" id="tAuth">--</div></div>
+    </div>
+
+    <div class="err-line reveal" id="errorLine" style="--i:2"><b>ERROR:</b> <span id="errorText"></span></div>
+
+    <div class="sec reveal" style="--i:2">
+      <div class="sec-h"><b>[</b> 01 · SETUP STATUS <b>]</b></div>
+      <div class="row">
+        <div><div class="k">Device discovered</div><div class="d">USB meter found and identified</div></div>
+        <span class="tag" id="bDevice">--</span>
+      </div>
+      <div class="row">
+        <div><div class="k">Protocol captured</div><div class="d">Measurement format is known</div></div>
+        <span class="tag" id="bProto">--</span>
+      </div>
+      <div class="row">
+        <div><div class="k">Remote trigger</div><div class="d">Hands-free vs. physical button</div></div>
+        <span class="tag" id="bTrig">--</span>
+      </div>
+    </div>
+
+    <div class="sec reveal" style="--i:3">
+      <div class="sec-h"><b>[</b> 02 · METER MODEL <b>]</b></div>
+      <div class="controls">
+        <select id="meterModel">
+          <option value="C-700">C-700</option>
+          <option value="C-800">C-800</option>
+          <option value="C-7000">C-7000</option>
+        </select>
+        <button class="btn" onclick="setModel()">SAVE</button>
+        <span class="msg inline" id="modelMsg"></span>
+      </div>
+    </div>
+
+    <div class="sec reveal" style="--i:4">
+      <div class="sec-h"><b>[</b> 03 · ACTIONS <b>]</b></div>
+      <div class="btn-grid">
+        <button class="btn" onclick="doAction('/discover','GET','SCANNING FOR THE METER…')">SCAN FOR METER</button>
+        <button class="btn" onclick="doAction('/capture','POST','TAKING A TEST MEASUREMENT…')">TEST MEASUREMENT</button>
+        <button class="btn" onclick="doAction('/learn_trigger','POST','SEARCHING FOR THE REMOTE TRIGGER (UP TO 2 MIN)…')">FIND TRIGGER</button>
+        <button class="btn danger" onclick="restart()">RESTART</button>
+      </div>
+      <div class="msg" id="actionMsg"></div>
+    </div>
+
+    <div class="foot"><span>LIVE · UPDATES EVERY 3S</span><span>LIGHTTUNE ©</span></div>
+  </div>
+
+<script>
+let apiKey = new URLSearchParams(location.search).get('key') || '';
+const $ = (id) => document.getElementById(id);
+
+function headers() {
+  const h = {'Content-Type': 'application/json'};
+  if (apiKey) h['X-Bridge-Key'] = apiKey;
+  return h;
+}
+
+function setBeacon(state) { $('beacon').className = 'beacon' + (state ? ' ' + state : ''); }
+function setTag(el, state, text) { el.className = 'tag' + (state ? ' ' + state : ''); el.textContent = text; }
+
+function saveKey() {
+  apiKey = $('apiKey').value;
+  $('keyMsg').textContent = '';
+  refresh();
+}
+
+async function refresh() {
+  try {
+    const res = await fetch('/status', {headers: headers()});
+    if (res.status === 401) {
+      $('keyRow').classList.add('show');
+      $('keyMsg').textContent = 'KEY REQUIRED';
+      setBeacon('off');
+      $('connBadge').textContent = 'LOCKED';
+      $('connState').innerHTML = '<b class="off">LOCKED</b>';
+      $('connSub').textContent = 'This bridge needs a key. Unlock it to see the status.';
+      $('connMeta').textContent = '';
+      $('tLink').textContent = 'LOCKED'; $('tLink').className = 'v off';
+      return;
+    }
+    $('keyRow').classList.remove('show');
+    const d = await res.json();
+
+    setBeacon(d.connected ? 'on' : 'off');
+    $('connBadge').textContent = d.connected ? 'CONNECTED' : 'NOT CONNECTED';
+    $('connModel').textContent = d.meter;
+    $('connState').innerHTML = d.connected
+      ? '<b class="on">CONNECTED</b> — READY TO MEASURE'
+      : '<b class="off">NOT CONNECTED</b> — NO METER FOUND';
+    $('connSub').textContent = d.connected
+      ? 'The meter is connected. You can take measurements from the console.'
+      : 'The meter is not responding on USB. Reconnect it, then press SCAN FOR METER.';
+    const mins = Math.floor(d.uptime_s / 60), secs = d.uptime_s % 60;
+    $('connMeta').textContent = 'RUNNING ' + mins + 'M ' + (secs < 10 ? '0' : '') + secs + 'S';
+
+    $('tLink').textContent = d.connected ? 'CONNECTED' : 'OFFLINE';
+    $('tLink').className = 'v ' + (d.connected ? 'on' : 'off');
+    $('tUptime').textContent = mins + 'M ' + (secs < 10 ? '0' : '') + secs + 'S';
+    $('tVersion').textContent = d.version;
+    $('version').textContent = 'VERSION ' + d.version;
+    $('tAuth').textContent = d.auth_required ? 'REQUIRED' : 'NOT SET';
+
+    setTag($('bDevice'), d.device_configured ? 'ok' : 'warn', d.device_configured ? 'READY' : 'NOT READY');
+    setTag($('bProto'), d.protocol_captured ? 'ok' : 'warn', d.protocol_captured ? 'READY' : 'NOT READY');
+    setTag($('bTrig'), d.trigger_discovered ? 'ok' : 'info', d.trigger_discovered ? 'HANDS-FREE' : 'BUTTON PRESS');
+
+    const errLine = $('errorLine');
+    if (d.last_error) { $('errorText').textContent = String(d.last_error).toUpperCase(); errLine.classList.add('show'); }
+    else { errLine.classList.remove('show'); }
+
+    const sel = $('meterModel');
+    if (document.activeElement !== sel) sel.value = d.meter;
+  } catch (e) {
+    setBeacon('off');
+    $('connBadge').textContent = 'NOT CONNECTED';
+    $('connState').innerHTML = '<b class="off">CANNOT REACH BRIDGE</b>';
+    $('connSub').textContent = 'No response from the bridge service. Check that it is running.';
+    $('connMeta').textContent = '';
+    $('tLink').textContent = 'OFFLINE'; $('tLink').className = 'v off';
+  }
+}
+
+async function setModel() {
+  const model = $('meterModel').value;
+  const msg = $('modelMsg');
+  msg.textContent = 'SAVING…'; msg.className = 'msg inline';
+  try {
+    const res = await fetch('/device_model', {method: 'POST', headers: headers(), body: JSON.stringify({model})});
+    const d = await res.json();
+    if (res.ok) { msg.textContent = 'SAVED'; msg.className = 'msg inline ok'; refresh(); }
+    else { msg.textContent = ((d.detail && d.detail.error) || 'FAILED').toUpperCase(); msg.className = 'msg inline err'; }
+  } catch (e) { msg.textContent = 'REQUEST FAILED'; msg.className = 'msg inline err'; }
+}
+
+async function doAction(path, method, pendingText) {
+  const msg = $('actionMsg');
+  msg.textContent = pendingText; msg.className = 'msg';
+  try {
+    const res = await fetch(path, {method, headers: headers()});
+    const d = await res.json();
+    msg.textContent = (res.ok ? 'DONE: ' : 'ERROR: ') + JSON.stringify(d);
+    msg.className = 'msg ' + (res.ok ? 'ok' : 'err');
+    refresh();
+  } catch (e) { msg.textContent = 'REQUEST FAILED: ' + e; msg.className = 'msg err'; }
+}
+
+async function restart() {
+  if (!confirm('Restart the bridge now? Any measurement in progress will be interrupted.')) return;
+  const msg = $('actionMsg');
+  try {
+    const res = await fetch('/restart', {method: 'POST', headers: headers()});
+    const d = await res.json();
+    msg.textContent = (d.message || 'RESTARTING…').toUpperCase();
+    msg.className = 'msg ok';
+  } catch (e) { msg.textContent = 'RESTART SENT — CONNECTION DROPPED, AS EXPECTED'; msg.className = 'msg ok'; }
+}
+
+if ('IntersectionObserver' in window) {
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach((e) => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold: 0.1});
+  document.querySelectorAll('.reveal').forEach((el) => io.observe(el));
+} else {
+  document.querySelectorAll('.reveal').forEach((el) => el.classList.add('in'));
+}
+
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>
+"""
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard():
+    """
+    Web dashboard: live bridge/meter status, meter-model selection (moved
+    here from the GrandMA3 plugin per the v2 plan), and the setup/
+    troubleshooting actions (scan/capture/discover-trigger/restart).
+
+    Deliberately NOT behind the `_auth` per-route dependency used by the
+    JSON API routes: a plain browser navigation to this URL can't attach a
+    custom X-Bridge-Key header, and this route serves only static HTML/JS
+    with no sensitive data. The page's own fetch() calls to the JSON
+    routes below still carry the key (typed into the page, or passed as
+    ?key=... in the dashboard URL) and are still fully protected.
+    """
+    return _DASHBOARD_HTML
+
+
+
+
+
+@app.get("/discover", dependencies=_auth)
 async def discover():
     """
     Scan USB bus for a Sekonic meter.
@@ -364,7 +794,7 @@ def _try_parse(data: bytes) -> dict | None:
     return None
 
 
-@app.post("/capture")
+@app.post("/capture", dependencies=_auth)
 async def capture():
     """
     Verify the meter connection by taking a test measurement.
@@ -412,18 +842,26 @@ async def capture():
 
     # ── C-7000 fast path: protocol fully known, trigger directly ──────────────
     if vendor_id == 0x0A41:
-        from meter_c7000_bulk import C7000Bulk
+        # Reuse the already-connected global `_meter` instead of constructing a
+        # second C7000Bulk() and calling connect() on it: libusb only allows
+        # one claim on INTERFACE at a time, so a second connect() while the
+        # startup connection is still holding it fails with a misleading
+        # "USBError: [Errno 13] Access denied (insufficient permissions)" —
+        # not an actual OS permissions problem. Mirrors how /measure does it.
+        if _meter is None or not _meter.is_connected():
+            raise HTTPException(
+                status_code=503,
+                detail={"error": "device_not_found",
+                        "hint": "Check that the C-7000 is plugged into the Pi"}
+            )
 
-        def _test_measure():
-            m = C7000Bulk()
-            if not m.connect():
-                return None
+        async with _measurement_lock:
             try:
-                return m.measure()
-            finally:
-                m.disconnect()
+                data = await loop.run_in_executor(None, _meter.measure)
+            except Exception as exc:
+                log.error("Capture (C-7000 fast path) failed: %s", exc)
+                data = None
 
-        data = await loop.run_in_executor(None, _test_measure)
         if data is None:
             raise HTTPException(
                 status_code=503,
@@ -512,7 +950,7 @@ async def capture():
     return JSONResponse(content=result)
 
 
-@app.post("/learn_trigger")
+@app.post("/learn_trigger", dependencies=_auth)
 async def learn_trigger():
     """
     Discover the USB HID trigger command for the C-7000 without Wireshark.
@@ -562,26 +1000,21 @@ async def learn_trigger():
                     "hint": "Call POST /capture first to capture the response format"}
         )
 
-    from meter_c7000_bulk import C7000Bulk
-
     candidates = _build_trigger_candidates()
     loop = asyncio.get_event_loop()
 
     async with _measurement_lock:
         for idx, cmd_bytes in enumerate(candidates):
+            # Reuse the already-connected global `_meter` — see /capture above
+            # for why constructing a second C7000Bulk() and connect()-ing it
+            # fails with a misleading libusb "Access denied" error.
             def _probe(cmd=cmd_bytes):
-                m = C7000Bulk()
+                if _meter is None or not _meter.is_connected():
+                    return None
                 try:
-                    if not m.connect():
-                        return None
-                    return m.probe_trigger(cmd, timeout_ms=4000)
+                    return _meter.probe_trigger(cmd, timeout_ms=4000)
                 except Exception:
                     return None
-                finally:
-                    try:
-                        m.disconnect()
-                    except Exception:
-                        pass
 
             result = await loop.run_in_executor(None, _probe)
             if result is not None:
@@ -605,7 +1038,7 @@ async def learn_trigger():
     )
 
 
-@app.post("/measure")
+@app.post("/measure", dependencies=_auth)
 async def measure():
     """
     Trigger a measurement on the connected C-7000.
@@ -653,6 +1086,18 @@ async def measure():
                 status_code=504,
                 detail={"error": "measurement_timeout",
                         "hint": "The meter did not respond – check USB connection"}
+            )
+        except ValueError as exc:
+            # Raised by C7000Bulk._parse() when the response contains
+            # out-of-range sentinel values -- almost always means the
+            # sensor was covered or aimed away from any light source.
+            _last_error = str(exc)
+            log.error("Invalid measurement: %s", exc)
+            raise HTTPException(
+                status_code=422,
+                detail={"error": "invalid_measurement",
+                        "hint": "Check that the meter's sensor is uncovered "
+                                "and pointed at the fixture, then try again."}
             )
         except Exception as exc:
             _last_error = str(exc)
