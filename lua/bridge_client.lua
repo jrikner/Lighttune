@@ -4,11 +4,12 @@
 local M = {}
 
 -- Route timeouts (seconds) — D-81
-M.TIMEOUT_STATUS       = 5
-M.TIMEOUT_DISCOVER     = 12
-M.TIMEOUT_CAPTURE      = 35
-M.TIMEOUT_MEASURE      = 38
+M.TIMEOUT_STATUS        = 5
+M.TIMEOUT_DISCOVER      = 12
+M.TIMEOUT_CAPTURE       = 35
+M.TIMEOUT_MEASURE       = 38
 M.TIMEOUT_LEARN_TRIGGER = 120
+M.TIMEOUT_FIXTURE_LOG   = 15
 
 -- Validation bounds (aligned with color_math)
 M.CCT_MIN = 1667
@@ -107,16 +108,20 @@ function M.request(method, host, port, path, opts)
         }
     end
 
+    local body = opts.body or ""
     local header_lines = {
         string.format("Host: %s", host),
-        "Content-Length: 0",
+        string.format("Content-Length: %d", #body),
     }
+    if body ~= "" then
+        header_lines[#header_lines + 1] = "Content-Type: application/json"
+    end
     if api_key and api_key ~= "" then
         header_lines[#header_lines + 1] = string.format("X-Bridge-Key: %s", api_key)
     end
     local req = string.format(
-        "%s %s HTTP/1.0\r\n%s\r\n\r\n",
-        method, path, table.concat(header_lines, "\r\n"))
+        "%s %s HTTP/1.0\r\n%s\r\n\r\n%s",
+        method, path, table.concat(header_lines, "\r\n"), body)
     tcp:send(req)
 
     tcp:settimeout(timeout_s)
@@ -208,7 +213,7 @@ local function bridge_config(config)
     }
 end
 
-local function route_request(config, method, path, timeout_s)
+local function route_request(config, method, path, timeout_s, body)
     if not config or not config.bridge_ip or config.bridge_ip == "" then
         return { ok = false, kind = "config", message = "no_bridge_configured" }
     end
@@ -216,6 +221,7 @@ local function route_request(config, method, path, timeout_s)
     local resp = M.request(method, bc.host, bc.port, path, {
         timeout_s = timeout_s,
         api_key   = bc.api_key,
+        body      = body,
     })
     if not resp.ok then return resp end
     if resp.status ~= 200 then
@@ -252,6 +258,27 @@ end
 
 function M.learn_trigger(config)
     return route_request(config, "POST", "/learn_trigger", M.TIMEOUT_LEARN_TRIGGER)
+end
+
+function M.sync_fixture_log(config, json_body)
+    if not json_body or json_body == "" then
+        return { ok = false, kind = "validation", message = "empty_body" }
+    end
+    local resp = route_request(config, "POST", "/fixture_log", M.TIMEOUT_FIXTURE_LOG, json_body)
+    if not resp.ok then return resp end
+    if resp.status ~= 200 then
+        return M.classify_http(resp.status, resp.body)
+    end
+    return { ok = true, body = resp.body }
+end
+
+function M.fetch_fixture_log(config)
+    local resp = route_request(config, "GET", "/fixture_log", M.TIMEOUT_FIXTURE_LOG)
+    if not resp.ok then return resp end
+    if resp.status ~= 200 then
+        return M.classify_http(resp.status, resp.body)
+    end
+    return { ok = true, body = resp.body }
 end
 
 return M

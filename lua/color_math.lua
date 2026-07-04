@@ -106,10 +106,12 @@ function M.get_correction(tgt_cct, tgt_duv, meas_cct, meas_duv, prev_x, prev_y)
     end
 
     return {
-        target_x  = target_x,
-        target_y  = target_y,
-        delta_cct = tgt_cct - meas_cct,
-        delta_duv = tgt_duv - meas_duv,
+        target_x     = target_x,
+        target_y     = target_y,
+        target_cct   = tgt_cct,
+        measured_cct = meas_cct,
+        delta_cct    = tgt_cct - meas_cct,
+        delta_duv    = tgt_duv - meas_duv,
     }
 end
 
@@ -196,23 +198,27 @@ function M.pick_wheel_slot(slots, need)
     return nil
 end
 
--- Closed-loop adjustments for Tint / CTO / CTB / ColorWheel (secant-style bumps).
--- SetColor xy still handles RGB-mix fine tuning; these channels coarse-correct first.
+-- Closed-loop adjustments for Tint / CTO / CTB / CTC / ColorWheel (secant-style bumps).
+-- SetColor xy still handles RGB-mix fine tuning; native channels coarse-correct first.
 local CCT_CHANNEL_GAIN   = 0.04   -- CTO/CTB % per Kelvin of error
-local DUV_TINT_GAIN      = 350    -- Tint units per Duv (fixture-dependent)
+local CTC_KELVIN_GAIN    = 0.45   -- fraction of remaining CCT error per attempt
+local DUV_TINT_GAIN      = 350    -- Tint units per Duv (0–100 scale, 50 = neutral)
 local CCT_USE_THRESHOLD  = 60     -- Kelvin
 local DUV_USE_THRESHOLD  = 0.002
 
 function M.compute_channel_adjustments(correction, caps, prev)
     prev = prev or {}
+    local tint_neutral = (caps and caps.tint_neutral) or 50
     local out = {
-        tint             = prev.tint or 0,
+        tint             = prev.tint or tint_neutral,
         cto              = prev.cto or 0,
         ctb              = prev.ctb or 0,
+        ctc_kelvin       = prev.ctc_kelvin,
         color_wheel_slot = prev.color_wheel_slot,
         tint_changed     = false,
         cto_changed      = false,
         ctb_changed      = false,
+        ctc_changed      = false,
         wheel_changed    = false,
     }
     if not correction or not caps then return out end
@@ -222,14 +228,29 @@ function M.compute_channel_adjustments(correction, caps, prev)
     local slots = caps.color_wheel_slots
 
     if math.abs(dk) >= CCT_USE_THRESHOLD then
-        if dk > 0 and caps.has_cto then
-            out.cto = M.clamp((prev.cto or 0) + dk * CCT_CHANNEL_GAIN, 0, 100)
+        if caps.has_ctc then
+            local base = prev.ctc_kelvin or correction.measured_cct or correction.target_cct
+                or (caps and caps.gdtf_cct) or 5600
+            local next_k = base + dk * CTC_KELVIN_GAIN
+            if caps.ctc_kelvin_min and caps.ctc_kelvin_max then
+                local lo = math.min(caps.ctc_kelvin_min, caps.ctc_kelvin_max)
+                local hi = math.max(caps.ctc_kelvin_min, caps.ctc_kelvin_max)
+                next_k = M.clamp(next_k, lo, hi)
+            else
+                next_k = M.clamp(next_k, 2700, 10000)
+            end
+            out.ctc_kelvin = next_k
+            out.ctc_changed = true
+        elseif dk < 0 and caps.has_cto then
+            -- Measured CCT above target (too cool) → warm with CTO.
+            out.cto = M.clamp((prev.cto or 0) + (-dk) * CCT_CHANNEL_GAIN, 0, 100)
             out.cto_changed = true
-        elseif dk < 0 and caps.has_ctb then
-            out.ctb = M.clamp((prev.ctb or 0) + (-dk) * CCT_CHANNEL_GAIN, 0, 100)
+        elseif dk > 0 and caps.has_ctb then
+            -- Measured CCT below target (too warm) → cool with CTB.
+            out.ctb = M.clamp((prev.ctb or 0) + dk * CCT_CHANNEL_GAIN, 0, 100)
             out.ctb_changed = true
         elseif slots and caps.color_wheel_attr then
-            local slot = dk > 0 and M.pick_wheel_slot(slots, "cto")
+            local slot = dk < 0 and M.pick_wheel_slot(slots, "cto")
                 or M.pick_wheel_slot(slots, "ctb")
             if slot then
                 out.color_wheel_slot = slot
@@ -240,7 +261,8 @@ function M.compute_channel_adjustments(correction, caps, prev)
 
     if math.abs(dd) >= DUV_USE_THRESHOLD then
         if caps.has_tint then
-            out.tint = M.clamp((prev.tint or 0) - dd * DUV_TINT_GAIN, -100, 100)
+            out.tint = M.clamp((prev.tint or tint_neutral) - dd * DUV_TINT_GAIN,
+                (caps and caps.tint_min) or 0, (caps and caps.tint_max) or 100)
             out.tint_changed = true
         elseif slots and caps.color_wheel_attr then
             local slot = dd > 0 and M.pick_wheel_slot(slots, "minus_green")

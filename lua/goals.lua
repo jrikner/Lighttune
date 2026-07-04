@@ -58,6 +58,88 @@ function M.has_improved(score, prev_score)
     return (prev_score - score) > M.IMPROVEMENT_EPSILON
 end
 
+-- Plateau detection: last N readings all within this CCT/Duv spread means
+-- the fixture is no longer moving — stop even if error_score noise flickers.
+M.STAGNANT_WINDOW       = 3
+M.STAGNANT_READING_CCT_K = 50
+M.STAGNANT_READING_DUV   = 0.004
+
+function M.readings_window_flat(readings, cct_tol, duv_tol)
+    cct_tol = cct_tol or M.STAGNANT_READING_CCT_K
+    duv_tol = duv_tol or M.STAGNANT_READING_DUV
+    if not readings or #readings < M.STAGNANT_WINDOW then
+        return false
+    end
+    local min_cct, max_cct = readings[1].cct, readings[1].cct
+    local min_duv, max_duv = readings[1].duv, readings[1].duv
+    for i = 2, #readings do
+        local r = readings[i]
+        if r.cct < min_cct then min_cct = r.cct end
+        if r.cct > max_cct then max_cct = r.cct end
+        if r.duv < min_duv then min_duv = r.duv end
+        if r.duv > max_duv then max_duv = r.duv end
+    end
+    return (max_cct - min_cct) <= cct_tol and (max_duv - min_duv) <= duv_tol
+end
+
+-- Track consecutive attempts that fail to improve vs the previous reading,
+-- and whether the last STAGNANT_WINDOW CCT/Duv readings sit in a tight band.
+function M.update_stagnation(state, measured, score)
+    state = state or {}
+
+    if not state.best_score or M.has_improved(score, state.best_score) then
+        state.best_score = score
+    end
+
+    local improved_vs_last = not state.last_score or M.has_improved(score, state.last_score)
+    if improved_vs_last then
+        state.stagnant_count = 0
+    else
+        state.stagnant_count = (state.stagnant_count or 0) + 1
+    end
+    state.last_score = score
+
+    state.recent_readings = state.recent_readings or {}
+    state.recent_readings[#state.recent_readings + 1] = {
+        cct = measured.cct,
+        duv = measured.duv,
+    }
+    while #state.recent_readings > M.STAGNANT_WINDOW do
+        table.remove(state.recent_readings, 1)
+    end
+    state.reading_plateau = M.readings_window_flat(state.recent_readings)
+
+    state.recent_scores = state.recent_scores or {}
+    state.recent_scores[#state.recent_scores + 1] = score
+    while #state.recent_scores > M.STAGNANT_WINDOW do
+        table.remove(state.recent_scores, 1)
+    end
+    if #state.recent_scores >= M.STAGNANT_WINDOW then
+        local min_s, max_s = state.recent_scores[1], state.recent_scores[1]
+        for i = 2, #state.recent_scores do
+            local s = state.recent_scores[i]
+            if s < min_s then min_s = s end
+            if s > max_s then max_s = s end
+        end
+        if (max_s - min_s) <= M.IMPROVEMENT_EPSILON then
+            state.score_plateau = true
+        else
+            state.score_plateau = false
+        end
+    else
+        state.score_plateau = false
+    end
+
+    return state
+end
+
+function M.is_stagnated(state, max_stagnant)
+    max_stagnant = max_stagnant or M.STAGNANT_WINDOW
+    if not state then return false end
+    if state.reading_plateau or state.score_plateau then return true end
+    return (state.stagnant_count or 0) >= max_stagnant
+end
+
 function M.goals_met(measured, goals)
     if math.abs(measured.cct - goals.cct) > M.CCT_GOAL_TOLERANCE then return false end
     if math.abs(measured.duv - goals.duv) > M.QUALITY.DUV.acceptable then return false end

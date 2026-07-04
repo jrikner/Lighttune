@@ -1,6 +1,7 @@
 {
   "_comment": "Copy this file to config.json at the plugin root (same folder as plugin.xml), NOT inside data/.",
 
+  "_comment_github_username": "Your GitHub handle for fixture log attribution. Leave blank or use Settings in the plugin menu to set it.",
   "github_username":   "your_github_username",
 
   "bridge_ip":         "127.0.0.1",
@@ -12,5 +13,11 @@
   "bridge_api_key":    "",
 
   "_comment_focus_preset": "Position preset (pool 2) with fixtures aimed at Sekonic — e.g. 2.12 or 12",
-  "focus_preset":      ""
+  "focus_preset":      "",
+
+  "_comment_open_bridge_browser": "When true, open the bridge dashboard in the system browser on plugin start (onPC only). Default: false — use Open Bridge from the menu instead.",
+  "open_bridge_browser": false,
+
+  "_comment_bridge_auto_continue_sec": "Hands-free bridge mode: seconds before auto-continuing past info dialogs (default 3, set 0 to skip pause)",
+  "bridge_auto_continue_sec": 3
 }

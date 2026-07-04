@@ -90,14 +90,20 @@ return function(M)
     M.section("compute_channel_adjustments")
     local caps_tint = { has_tint = true, has_cto = false, has_ctb = false }
     do
-        local ch = compute_channel_adjustments({ delta_cct = 0, delta_duv = 0.01 }, caps_tint, { tint = 0 })
+        local ch = compute_channel_adjustments({ delta_cct = 0, delta_duv = 0.01 }, caps_tint, { tint = 50 })
         M.assert_equal("tint changed", ch.tint_changed, true)
-        M.assert_near("tint value", ch.tint, -3.5, 0.5)
+        M.assert_near("tint value", ch.tint, 46.5, 0.5)
     end
     local caps_cto = { has_tint = false, has_cto = true, has_ctb = false }
     do
-        local ch = compute_channel_adjustments({ delta_cct = 500, delta_duv = 0 }, caps_cto, { cto = 0 })
+        local ch = compute_channel_adjustments({ delta_cct = -500, delta_duv = 0, measured_cct = 5500, target_cct = 5000 }, caps_cto, { cto = 0 })
         M.assert_equal("cto changed", ch.cto_changed, true)
         M.assert_near("cto value", ch.cto, 20, 0.5)
+    end
+    local caps_ctc = { has_ctc = true, has_cto = false, has_ctb = false }
+    do
+        local ch = compute_channel_adjustments({ delta_cct = -448, delta_duv = 0, measured_cct = 5448, target_cct = 5000 }, caps_ctc, { ctc_kelvin = 5448 })
+        M.assert_equal("ctc changed", ch.ctc_changed, true)
+        M.assert_near("ctc kelvin", ch.ctc_kelvin, 5246, 2)
     end
 end

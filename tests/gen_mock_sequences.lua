@@ -149,8 +149,7 @@ for _, profile in ipairs(PROFILES) do
 
     local measured_x, measured_y = cct_duv_to_xy(TARGET.cct + START_OFFSET_CCT, START_OFFSET_DUV)
     local applied_x, applied_y = nil, nil
-    local prev_score = nil
-    local stagnant_count = 0
+    local stagnation = { best_score = nil, stagnant_count = 0 }
     local frozen = nil
     local met_at, stagnated_at, hard_cap_hit = nil, nil, false
 
@@ -204,25 +203,20 @@ for _, profile in ipairs(PROFILES) do
 
         local measured = { cct = cct, duv = duv, cri = cri, r9 = r9 }
         local score = goals.error_score(measured, TARGET)
-        local improved = (attempt == 1) or goals.has_improved(score, prev_score)
+        stagnation = goals.update_stagnation(stagnation, measured, score)
         local met = goals.goals_met(measured, TARGET)
 
-        if not improved then
-            stagnant_count = stagnant_count + 1
-        else
-            stagnant_count = 0
-        end
-
         out[#out+1] = string.format(
-            "        { attempt=%d, cct=%d, duv=%.4f, cri=%d, r9=%d, error_score=%.4f, improved=%s, goals_met=%s, stagnant_count=%d },",
-            attempt, cct, duv, cri, r9, score, tostring(improved), tostring(met), stagnant_count)
+            "        { attempt=%d, cct=%d, duv=%.4f, cri=%d, r9=%d, error_score=%.4f, improved=%s, goals_met=%s, stagnant_count=%d, reading_plateau=%s },",
+            attempt, cct, duv, cri, r9, score, tostring(stagnation.improved), tostring(met),
+            stagnation.stagnant_count, tostring(stagnation.reading_plateau or false))
 
         if met and not met_at then met_at = attempt end
-        if stagnant_count >= MAX_STAGNANT and not stagnated_at then stagnated_at = attempt end
+        if goals.is_stagnated(stagnation, MAX_STAGNANT) and not stagnated_at then
+            stagnated_at = attempt
+        end
 
-        prev_score = score
-
-        if met or stagnant_count >= MAX_STAGNANT then break end
+        if met or goals.is_stagnated(stagnation, MAX_STAGNANT) then break end
         if attempt == MAX_ATTEMPTS_HARD then hard_cap_hit = true; break end
     end
 

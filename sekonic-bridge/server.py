@@ -13,6 +13,10 @@ Endpoints:
                         capture raw bytes, attempt auto-parse, save to device_config.json
   POST /learn_trigger — probe candidate HID trigger commands to discover the remote
                         trigger byte sequence; saves result to device_config.json
+  GET  /dashboard     — bridge setup/status web UI
+  GET  /fixtures      — fixture measurement log web UI (synced from console)
+  GET  /fixture_log   — JSON fixture log
+  POST /fixture_log   — replace fixture log from console plugin upload
 
 Usage:
   python3 server.py [--host 0.0.0.0] [--port 8765] [--mock]
@@ -135,6 +139,100 @@ def _is_protocol_captured() -> bool:
 def _is_trigger_discovered() -> bool:
     cfg = _load_device_config()
     return bool(cfg.get("trigger_discovered"))
+
+
+# ── fixture log (synced from GrandMA3 plugin) ────────────────────────────────
+
+FIXTURE_LOG_PATH = INSTALL_DIR / "fixture_log.json"
+_fixture_log_updated_at: str | None = None
+
+
+def _load_fixture_log() -> list[dict]:
+    if not FIXTURE_LOG_PATH.exists():
+        return []
+    try:
+        data = json.loads(FIXTURE_LOG_PATH.read_text())
+    except Exception:
+        return []
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict) and isinstance(data.get("records"), list):
+        return data["records"]
+    return []
+
+
+def _save_fixture_log(records: list[dict]) -> None:
+    global _fixture_log_updated_at
+    FIXTURE_LOG_PATH.write_text(json.dumps(records, indent=2))
+    _fixture_log_updated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _normalize_fixture_record(raw: object, index: int) -> dict:
+    if not isinstance(raw, dict):
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "invalid_record",
+                    "hint": f"record {index} must be an object"},
+        )
+    make = raw.get("make")
+    model = raw.get("model")
+    kelvin = raw.get("kelvin")
+    if not isinstance(make, str) or not make.strip():
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "invalid_record",
+                    "hint": f"record {index}: make is required"},
+        )
+    if not isinstance(model, str) or not model.strip():
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "invalid_record",
+                    "hint": f"record {index}: model is required"},
+        )
+    try:
+        kelvin_i = int(kelvin)
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "invalid_record",
+                    "hint": f"record {index}: kelvin must be an integer"},
+        )
+
+    rec: dict = {
+        "make": make.strip(),
+        "model": model.strip(),
+        "kelvin": kelvin_i,
+    }
+    for key in ("date", "contributor"):
+        val = raw.get(key)
+        if isinstance(val, str) and val.strip():
+            rec[key] = val.strip()
+    for key in ("cct", "cri", "r9", "tlci"):
+        val = raw.get(key)
+        if val is not None:
+            try:
+                rec[key] = int(val)
+            except (TypeError, ValueError):
+                pass
+    duv = raw.get("duv")
+    if duv is not None:
+        try:
+            rec["duv"] = float(duv)
+        except (TypeError, ValueError):
+            pass
+    for key in ("best_cri", "best_r9", "best_tlci", "best_duv"):
+        if raw.get(key) is True:
+            rec[key] = True
+    return rec
+
+
+def _fixture_log_payload() -> dict:
+    records = _load_fixture_log()
+    return {
+        "records": records,
+        "count": len(records),
+        "updated_at": _fixture_log_updated_at,
+    }
 
 
 def _build_trigger_candidates() -> list:
@@ -429,6 +527,8 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
   .foot { margin-top:34px; padding-top:14px; border-top:2px solid var(--red);
     color:var(--faint); font-size:10px; text-transform:uppercase; letter-spacing:0.18em;
     display:flex; justify-content:space-between; }
+  .foot a.nav { color:var(--fg); text-decoration:none; }
+  .foot a.nav:hover { text-decoration:underline; }
 
   .reveal { opacity:0; transform:translateY(8px);
     transition:opacity .3s steps(5), transform .3s ease-out; transition-delay:calc(var(--i,0) * 55ms); }
@@ -509,7 +609,7 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
       <div class="msg" id="actionMsg"></div>
     </div>
 
-    <div class="foot"><span>LIVE · UPDATES EVERY 3S</span><span>LIGHTTUNE ©</span></div>
+    <div class="foot"><span><a class="nav" href="/fixtures">FIXTURE LOG</a> · LIVE · UPDATES EVERY 3S</span><span>LIGHTTUNE ©</span></div>
   </div>
 
 <script>
@@ -656,6 +756,218 @@ async def dashboard():
     return _DASHBOARD_HTML
 
 
+_FIXTURES_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FIXTURE LOG // LIGHTTUNE</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@800;900&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:#0d0d0d; --line:#2b2b2b; --fg:#eaeaea; --dim:#8a8a8a; --faint:#565656;
+    --red:#e61919; --green:#4af626;
+    --mono:"JetBrains Mono",ui-monospace,"SF Mono",Menlo,monospace;
+    --head:"Archivo","Helvetica Neue",Arial,sans-serif;
+  }
+  * { box-sizing:border-box; border-radius:0 !important; }
+  html,body { margin:0; }
+  body { background:var(--bg); color:var(--fg); font:13px/1.5 var(--mono); padding:0; }
+  .wrap { max-width:1100px; margin:0 auto; padding:26px 22px 40px; }
+  .topbar { display:flex; align-items:center; justify-content:space-between; margin-bottom:22px; }
+  .topbar a { color:var(--dim); text-decoration:none; font-size:11px; letter-spacing:0.12em; text-transform:uppercase; }
+  .topbar a:hover { color:var(--fg); }
+  h1 { font:900 34px/1 var(--head); margin:0 0 8px; text-transform:uppercase; }
+  .meta { color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:18px; }
+  .keyrow { display:none; gap:0; margin-bottom:16px; }
+  .keyrow.show { display:flex; }
+  input, .btn {
+    font:12px/1 var(--mono); text-transform:uppercase; letter-spacing:0.08em;
+    background:var(--bg); color:var(--fg); border:1px solid var(--line); padding:12px 14px;
+  }
+  .btn { cursor:pointer; }
+  .btn:hover { background:var(--fg); color:var(--bg); }
+  .table-wrap { overflow-x:auto; border:1px solid var(--line); }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  th, td { padding:10px 12px; border-bottom:1px solid var(--line); text-align:left; white-space:nowrap; }
+  th { color:var(--dim); font-size:10px; letter-spacing:0.1em; text-transform:uppercase; background:#111; position:sticky; top:0; }
+  tr:last-child td { border-bottom:none; }
+  tr:hover td { background:#151515; }
+  .star { color:var(--green); }
+  .empty { padding:40px 0; color:var(--dim); text-transform:uppercase; letter-spacing:0.08em; text-align:center; }
+  .msg { font-size:11px; margin-top:10px; color:var(--dim); text-transform:uppercase; }
+  .msg.err { color:var(--red); }
+  .foot { margin-top:28px; padding-top:14px; border-top:2px solid var(--red);
+    color:var(--faint); font-size:10px; text-transform:uppercase; letter-spacing:0.18em;
+    display:flex; justify-content:space-between; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="topbar">
+      <a href="/dashboard">← SEKONIC BRIDGE</a>
+      <span id="updated">—</span>
+    </div>
+    <h1>Fixture Log</h1>
+    <div class="meta" id="summary">Loading logged fixtures…</div>
+
+    <div id="keyRow" class="keyrow">
+      <input id="apiKey" type="password" placeholder="BRIDGE KEY" style="flex:1">
+      <button class="btn" onclick="saveKey()">UNLOCK</button>
+    </div>
+
+    <div class="table-wrap" id="tableWrap">
+      <table id="logTable">
+        <thead>
+          <tr>
+            <th>Make</th><th>Model</th><th>K</th><th>Date</th><th>By</th>
+            <th>CCT</th><th>Duv</th><th>CRI</th><th>R9</th><th>TLCI</th><th>Best</th>
+          </tr>
+        </thead>
+        <tbody id="logBody"></tbody>
+      </table>
+      <div class="empty" id="emptyState" style="display:none">No fixtures logged yet — run a calibration on the console.</div>
+    </div>
+    <div class="msg" id="statusMsg"></div>
+    <div class="foot"><span id="countFoot">—</span><span>LIGHTTUNE ©</span></div>
+  </div>
+<script>
+let apiKey = new URLSearchParams(location.search).get('key') || '';
+const $ = (id) => document.getElementById(id);
+
+function headers() {
+  const h = {};
+  if (apiKey) h['X-Bridge-Key'] = apiKey;
+  return h;
+}
+
+function saveKey() {
+  apiKey = $('apiKey').value;
+  refresh();
+}
+
+function fmtNum(v, digits) {
+  if (v === null || v === undefined || v === '') return '—';
+  if (typeof v === 'number' && digits !== undefined) return v.toFixed(digits);
+  return String(v);
+}
+
+function bestTags(rec) {
+  const tags = [];
+  if (rec.best_cri) tags.push('CRI★');
+  if (rec.best_r9) tags.push('R9★');
+  if (rec.best_tlci) tags.push('TLCI★');
+  if (rec.best_duv) tags.push('DUV★');
+  return tags.length ? tags.join(' ') : '—';
+}
+
+function renderRows(records) {
+  const body = $('logBody');
+  body.innerHTML = '';
+  if (!records.length) {
+    $('emptyState').style.display = 'block';
+    $('logTable').style.display = 'none';
+    return;
+  }
+  $('emptyState').style.display = 'none';
+  $('logTable').style.display = 'table';
+  for (const rec of records) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${rec.make || '—'}</td>
+      <td>${rec.model || '—'}</td>
+      <td>${rec.kelvin || '—'}K</td>
+      <td>${rec.date || '—'}</td>
+      <td>${rec.contributor || '—'}</td>
+      <td>${rec.cct != null ? rec.cct + 'K' : '—'}</td>
+      <td>${rec.duv != null ? (rec.duv >= 0 ? '+' : '') + fmtNum(rec.duv, 4) : '—'}</td>
+      <td>${rec.cri != null ? rec.cri : '—'}</td>
+      <td>${rec.r9 != null ? rec.r9 : '—'}</td>
+      <td>${rec.tlci != null ? rec.tlci : '—'}</td>
+      <td class="star">${bestTags(rec)}</td>`;
+    body.appendChild(tr);
+  }
+}
+
+async function refresh() {
+  const msg = $('statusMsg');
+  msg.textContent = '';
+  try {
+    const res = await fetch('/fixture_log', {headers: headers()});
+    if (res.status === 401) {
+      $('keyRow').classList.add('show');
+      msg.textContent = 'KEY REQUIRED';
+      msg.className = 'msg err';
+      $('summary').textContent = 'Unlock with your bridge key to view the fixture log.';
+      renderRows([]);
+      return;
+    }
+    $('keyRow').classList.remove('show');
+    const d = await res.json();
+    const records = d.records || [];
+    renderRows(records);
+    $('summary').textContent = records.length
+      ? records.length + ' measurement' + (records.length === 1 ? '' : 's') + ' from the console'
+      : 'Waiting for the first calibration upload from the console';
+    $('updated').textContent = d.updated_at ? 'UPDATED ' + d.updated_at.replace('T', ' ').replace('Z', ' UTC') : 'NOT YET SYNCED';
+    $('countFoot').textContent = records.length + ' ENTRIES';
+  } catch (e) {
+    msg.textContent = 'CANNOT REACH BRIDGE';
+    msg.className = 'msg err';
+    renderRows([]);
+  }
+}
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>
+"""
+
+
+@app.get("/fixtures", response_class=HTMLResponse)
+async def fixtures_page():
+    """Browser page listing all fixture measurements synced from the console."""
+    return _FIXTURES_HTML
+
+
+@app.get("/fixture_log", dependencies=_auth)
+async def get_fixture_log():
+    """Return the fixture measurement log synced from the GrandMA3 plugin."""
+    return _fixture_log_payload()
+
+
+@app.post("/fixture_log", dependencies=_auth)
+async def post_fixture_log(request: Request):
+    """
+    Replace the bridge's fixture log with the console's fixture_log.json.
+    Called automatically by the SekonicCalibrator plugin after each save.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail={"error": "invalid_json"})
+
+    raw_records = body
+    if isinstance(body, dict):
+        raw_records = body.get("records", [])
+
+    if not isinstance(raw_records, list):
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "invalid_payload",
+                    "hint": "body must be a JSON array or {\"records\": [...]}"},
+        )
+
+    records = [_normalize_fixture_record(item, i) for i, item in enumerate(raw_records)]
+    _save_fixture_log(records)
+    log.info("Fixture log synced: %d record(s)", len(records))
+    payload = _fixture_log_payload()
+    payload["ok"] = True
+    return payload
 
 
 
