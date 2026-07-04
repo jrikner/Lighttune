@@ -48,6 +48,13 @@ GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 info() { echo -e "${GREEN}[package]${NC} $*"; }
 warn() { echo -e "${YELLOW}[warn]   ${NC} $*"; }
 
+if command -v lua5.4 >/dev/null 2>&1; then
+    info "Running host test suite (lua5.4 tests/run.lua) ..."
+    lua5.4 tests/run.lua
+else
+    warn "lua5.4 not found — skipping host tests (install lua5.4 or run tests/run.lua manually)"
+fi
+
 info "Building $OUT_DIR ..."
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR/lua" "$OUT_DIR/data/measurements"

@@ -52,14 +52,112 @@ function M.apply_duv_correction(x, y, measured_duv, target_duv)
     return M.uvp_to_xy(up, vp)
 end
 
-function M.get_correction(tgt_cct, tgt_duv, meas_cct, meas_duv)
+-- get_correction: compute the next xy to send to the fixture.
+--
+-- tgt_cct/tgt_duv   – the calibration target.
+-- meas_cct/meas_duv – the values the Sekonic just measured on the fixture
+--                      (i.e. the result of whatever was applied last time,
+--                      or of the fixture's default/cold state on attempt 1).
+-- prev_x/prev_y      – the xy that was actually SENT to the fixture to
+--                      produce that measurement (nil on the very first
+--                      attempt, when nothing has been applied yet).
+--
+-- Closed-loop (prev_x/prev_y given): most color-mixing fixtures do not
+-- reproduce a commanded xy exactly — LED binning, dimmer-curve interaction,
+-- gel/diffusion absorption, and the meter's own calibration all introduce
+-- a fixture-specific offset between "what we told it" and "what it put
+-- out". Recomputing the open-loop target from tgt_cct/tgt_duv every
+-- attempt (the original behaviour) ignores that offset completely, so it
+-- converges only by luck. Instead this applies a proportional/secant-style
+-- update in CIE 1976 u'v' space (perceptually uniform, so a fixed-size
+-- step means a fixed-size visual correction regardless of where in the
+-- gamut we are): the correction is added not to the target, but to the
+-- point we actually sent last time —
+--     next_applied = prev_applied + (target - measured)
+-- — which directly cancels out the fixture's measured response error.
+-- With gain=1 this is the standard secant-method update for a
+-- (locally-)linear system and typically converges in 2-3 iterations for
+-- real fixtures; a fixture with a strongly nonlinear response may need a
+-- couple more, but each step still moves monotonically toward target
+-- instead of repeating the same open-loop guess.
+--
+-- Open-loop (prev_x/prev_y nil): the first attempt has no fixture response
+-- yet to learn from, so this returns the direct cct/duv → xy conversion,
+-- same as the original behaviour.
+M.GAIN_U_BASE = 1.0
+M.GAIN_V_BASE = 0.85
+M.NATIVE_ONLY_CCT_K = 80
+M.NATIVE_ONLY_DUV   = 0.005
+
+function M.normalized_error_mag(delta_cct, delta_duv)
+    return math.sqrt((delta_cct / 100) ^ 2 + (delta_duv / 0.01) ^ 2)
+end
+
+-- Adaptive closed-loop gains: damp on oscillation (sign flip) and when error shrinks.
+function M.compute_closed_loop_gains(delta_cct, delta_duv, opts)
+    opts = opts or {}
+    local gain_u = M.GAIN_U_BASE
+    local gain_v = M.GAIN_V_BASE
+
+    if opts.prev_delta_cct and (opts.prev_delta_cct * delta_cct) < 0 then
+        gain_u = gain_u * 0.5
+    end
+    if opts.prev_delta_duv and (opts.prev_delta_duv * delta_duv) < 0 then
+        gain_v = gain_v * 0.5
+    end
+
+    local err_mag = M.normalized_error_mag(delta_cct, delta_duv)
+    if opts.prev_error_mag and err_mag < opts.prev_error_mag then
+        gain_u = gain_u * 0.85
+        gain_v = gain_v * 0.85
+    end
+
+    return gain_u, gain_v, err_mag
+end
+
+function M.should_use_setcolor_xy(correction, caps)
+    if not correction then return false end
+    if not caps or not caps.has_native_color_channels then return true end
+    local dk = math.abs(correction.delta_cct or 0)
+    local dd = math.abs(correction.delta_duv or 0)
+    return dk < M.NATIVE_ONLY_CCT_K and dd < M.NATIVE_ONLY_DUV
+end
+
+function M.get_correction(tgt_cct, tgt_duv, meas_cct, meas_duv, prev_x, prev_y, opts)
     local tx, ty = M.cct_to_xy(tgt_cct)
     tx, ty = M.apply_duv_correction(tx, ty, 0, tgt_duv)
+
+    local target_x, target_y = tx, ty
+    local delta_cct = tgt_cct - meas_cct
+    local delta_duv = tgt_duv - meas_duv
+    local gain_u, gain_v = M.GAIN_U_BASE, M.GAIN_V_BASE
+    local err_mag = M.normalized_error_mag(delta_cct, delta_duv)
+
+    if prev_x and prev_y then
+        local mx, my = M.cct_to_xy(meas_cct)
+        mx, my = M.apply_duv_correction(mx, my, 0, meas_duv)
+
+        local meas_up, meas_vp = M.xy_to_uvp(mx, my)
+        local tgt_up,  tgt_vp  = M.xy_to_uvp(tx, ty)
+        local prev_up, prev_vp = M.xy_to_uvp(prev_x, prev_y)
+
+        gain_u, gain_v, err_mag = M.compute_closed_loop_gains(delta_cct, delta_duv, opts)
+        local next_up = prev_up + gain_u * (tgt_up - meas_up)
+        local next_vp = prev_vp + gain_v * (tgt_vp - meas_vp)
+
+        target_x, target_y = M.uvp_to_xy(next_up, next_vp)
+    end
+
     return {
-        target_x  = tx,
-        target_y  = ty,
-        delta_cct = tgt_cct - meas_cct,
-        delta_duv = tgt_duv - meas_duv,
+        target_x     = target_x,
+        target_y     = target_y,
+        target_cct   = tgt_cct,
+        measured_cct = meas_cct,
+        delta_cct    = delta_cct,
+        delta_duv    = delta_duv,
+        gain_u       = gain_u,
+        gain_v       = gain_v,
+        error_mag    = err_mag,
     }
 end
 
@@ -120,6 +218,109 @@ function M.gel_hint(duv)
     else
         return string.format("%s Plus Green   (Duv %+.4f, magenta shift)", amount, duv)
     end
+end
+
+function M.clamp(v, lo, hi)
+    return math.max(lo, math.min(hi, v))
+end
+
+-- Match a ColorWheel slot name to a correction need (fixture-specific names).
+function M.pick_wheel_slot(slots, need)
+    if not slots or #slots == 0 then return nil end
+    local patterns = {
+        minus_green = { "minus green", "minusgreen", "minus g", "magenta" },
+        plus_green  = { "plus green", "plusgreen", "plus g" },
+        cto         = { "full cto", "1/2 cto", "1/4 cto", "1/8 cto", "cto", "3200", "warm" },
+        ctb         = { "full ctb", "1/2 ctb", "1/4 ctb", "1/8 ctb", "ctb", "5600", "7000", "cool" },
+    }
+    local pats = patterns[need]
+    if not pats then return nil end
+    for _, slot in ipairs(slots) do
+        local s = tostring(slot):lower()
+        for _, pat in ipairs(pats) do
+            if s:find(pat, 1, true) then return slot end
+        end
+    end
+    return nil
+end
+
+-- Closed-loop adjustments for Tint / CTO / CTB / CTC / ColorWheel (secant-style bumps).
+-- SetColor xy still handles RGB-mix fine tuning; native channels coarse-correct first.
+local CCT_CHANNEL_GAIN   = 0.04   -- CTO/CTB % per Kelvin of error
+local CTC_KELVIN_GAIN    = 0.45   -- fraction of remaining CCT error per attempt
+local DUV_TINT_GAIN      = 350    -- Tint units per Duv (0–100 scale, 50 = neutral)
+local CCT_USE_THRESHOLD  = 60     -- Kelvin
+local DUV_USE_THRESHOLD  = 0.002
+
+function M.compute_channel_adjustments(correction, caps, prev)
+    prev = prev or {}
+    local tint_neutral = (caps and caps.tint_neutral) or 50
+    local out = {
+        tint             = prev.tint or tint_neutral,
+        cto              = prev.cto or 0,
+        ctb              = prev.ctb or 0,
+        ctc_kelvin       = prev.ctc_kelvin,
+        color_wheel_slot = prev.color_wheel_slot,
+        tint_changed     = false,
+        cto_changed      = false,
+        ctb_changed      = false,
+        ctc_changed      = false,
+        wheel_changed    = false,
+    }
+    if not correction or not caps then return out end
+
+    local dk = correction.delta_cct or 0
+    local dd = correction.delta_duv or 0
+    local slots = caps.color_wheel_slots
+
+    if math.abs(dk) >= CCT_USE_THRESHOLD then
+        if caps.has_ctc then
+            local base = prev.ctc_kelvin or correction.measured_cct or correction.target_cct
+                or (caps and caps.gdtf_cct) or 5600
+            local next_k = base + dk * CTC_KELVIN_GAIN
+            if caps.ctc_kelvin_min and caps.ctc_kelvin_max then
+                local lo = math.min(caps.ctc_kelvin_min, caps.ctc_kelvin_max)
+                local hi = math.max(caps.ctc_kelvin_min, caps.ctc_kelvin_max)
+                next_k = M.clamp(next_k, lo, hi)
+            else
+                next_k = M.clamp(next_k, 2700, 10000)
+            end
+            out.ctc_kelvin = next_k
+            out.ctc_changed = true
+        elseif dk < 0 and caps.has_cto then
+            -- Measured CCT above target (too cool) → warm with CTO.
+            out.cto = M.clamp((prev.cto or 0) + (-dk) * CCT_CHANNEL_GAIN, 0, 100)
+            out.cto_changed = true
+        elseif dk > 0 and caps.has_ctb then
+            -- Measured CCT below target (too warm) → cool with CTB.
+            out.ctb = M.clamp((prev.ctb or 0) + dk * CCT_CHANNEL_GAIN, 0, 100)
+            out.ctb_changed = true
+        elseif slots and caps.color_wheel_attr then
+            local slot = dk < 0 and M.pick_wheel_slot(slots, "cto")
+                or M.pick_wheel_slot(slots, "ctb")
+            if slot then
+                out.color_wheel_slot = slot
+                out.wheel_changed = true
+            end
+        end
+    end
+
+    if math.abs(dd) >= DUV_USE_THRESHOLD then
+        if caps.has_tint then
+            out.tint = M.clamp((prev.tint or tint_neutral) - dd * DUV_TINT_GAIN,
+                (caps and caps.tint_min) or 0, (caps and caps.tint_max) or 100)
+            out.tint_changed = true
+        elseif slots and caps.color_wheel_attr then
+            local slot = dd > 0 and M.pick_wheel_slot(slots, "minus_green")
+                or M.pick_wheel_slot(slots, "plus_green")
+            if slot then
+                out.color_wheel_slot = slot
+                out.wheel_changed = true
+            end
+        end
+    end
+
+    return out
 end
 
 return M

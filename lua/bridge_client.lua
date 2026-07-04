@@ -4,11 +4,12 @@
 local M = {}
 
 -- Route timeouts (seconds) — D-81
-M.TIMEOUT_STATUS       = 5
-M.TIMEOUT_DISCOVER     = 12
-M.TIMEOUT_CAPTURE      = 35
-M.TIMEOUT_MEASURE      = 38
+M.TIMEOUT_STATUS        = 5
+M.TIMEOUT_DISCOVER      = 12
+M.TIMEOUT_CAPTURE       = 35
+M.TIMEOUT_MEASURE       = 38
 M.TIMEOUT_LEARN_TRIGGER = 120
+M.TIMEOUT_FIXTURE_LOG   = 15
 
 -- Validation bounds (aligned with color_math)
 M.CCT_MIN = 1667
@@ -65,6 +66,16 @@ function M.classify_http(status, body)
             http_status = status,
         }
     end
+    if status == 422 then
+        return {
+            ok = false,
+            kind = "invalid_measurement",
+            message = err_msg,
+            hint = hint or "Sensor may be covered or aimed away from the "
+                         .."light source — uncover/aim it and try again",
+            http_status = status,
+        }
+    end
     return {
         ok = false,
         kind = "http",
@@ -97,27 +108,40 @@ function M.request(method, host, port, path, opts)
         }
     end
 
+    local body = opts.body or ""
     local header_lines = {
         string.format("Host: %s", host),
-        "Content-Length: 0",
+        string.format("Content-Length: %d", #body),
     }
+    if body ~= "" then
+        header_lines[#header_lines + 1] = "Content-Type: application/json"
+    end
     if api_key and api_key ~= "" then
         header_lines[#header_lines + 1] = string.format("X-Bridge-Key: %s", api_key)
     end
     local req = string.format(
-        "%s %s HTTP/1.0\r\n%s\r\n\r\n",
-        method, path, table.concat(header_lines, "\r\n"))
+        "%s %s HTTP/1.0\r\n%s\r\n\r\n%s",
+        method, path, table.concat(header_lines, "\r\n"), body)
     tcp:send(req)
 
     tcp:settimeout(timeout_s)
-    local chunks = {}
-    repeat
-        local chunk = tcp:receive(4096)
-        if chunk then chunks[#chunks + 1] = chunk end
-    until not chunk
+    -- Read until the peer closes the connection. Our requests are sent as
+    -- HTTP/1.0 with no keep-alive, so the bridge (uvicorn) always closes
+    -- after writing the response — "*a" is the correct/idiomatic pattern
+    -- for that ("read everything until EOF", never errors, always returns
+    -- what it got). The previous implementation looped on receive(4096)
+    -- (an EXACT byte-count request) and only kept the first return value;
+    -- since every response here is well under 4096 bytes, the peer closes
+    -- before that many bytes arrive, so receive() returned (nil, "closed",
+    -- partial-data) and the real bytes — sitting in the discarded third
+    -- return value — were lost every single time. That produced an empty
+    -- `full` string below, which failed to match the HTTP status line and
+    -- was misreported as "invalid_http_response" even when the bridge
+    -- answered correctly.
+    local data, recv_err, partial = tcp:receive("*a")
     tcp:close()
 
-    local full   = table.concat(chunks)
+    local full   = data or partial or ""
     local status = tonumber(full:match("HTTP/%d%.%d (%d+)"))
     local body   = full:match("\r\n\r\n(.-)$") or ""
 
@@ -131,11 +155,20 @@ function M.parse_measure_body(body)
     if not body or body == "" then
         return nil, { ok = false, kind = "malformed", message = "empty_response" }
     end
+    -- cri/r9 use the same "%-?[%d%.]+" (allow leading minus) pattern as
+    -- cct/duv, not "%d+". The C-7000 reports out-of-range sentinel values
+    -- (e.g. cri=-200, r9=-200) when its sensor is covered or aimed away
+    -- from any light source; a digits-only pattern silently failed to
+    -- match those negative sentinels at all, which surfaced as a
+    -- confusing "malformed_response" instead of the accurate
+    -- "cri_out_of_range" / "r9_out_of_range" validation error produced
+    -- below (the bridge server also bounds-checks this server-side —
+    -- see C7000Bulk._parse()).
     local cct  = tonumber(body:match('"cct"%s*:%s*(%-?[%d%.]+)'))
     local duv  = tonumber(body:match('"duv"%s*:%s*(%-?[%d%.]+)'))
-    local cri  = tonumber(body:match('"cri"%s*:%s*(%d+)'))
-    local r9   = tonumber(body:match('"r9"%s*:%s*(%d+)'))
-    local tlci = tonumber(body:match('"tlci"%s*:%s*(%d+)'))
+    local cri  = tonumber(body:match('"cri"%s*:%s*(%-?[%d%.]+)'))
+    local r9   = tonumber(body:match('"r9"%s*:%s*(%-?[%d%.]+)'))
+    local tlci = tonumber(body:match('"tlci"%s*:%s*(%-?[%d%.]+)'))
     if not cct or not duv or not cri or not r9 then
         return nil, { ok = false, kind = "malformed", message = "malformed_response" }
     end
@@ -180,7 +213,7 @@ local function bridge_config(config)
     }
 end
 
-local function route_request(config, method, path, timeout_s)
+local function route_request(config, method, path, timeout_s, body)
     if not config or not config.bridge_ip or config.bridge_ip == "" then
         return { ok = false, kind = "config", message = "no_bridge_configured" }
     end
@@ -188,6 +221,7 @@ local function route_request(config, method, path, timeout_s)
     local resp = M.request(method, bc.host, bc.port, path, {
         timeout_s = timeout_s,
         api_key   = bc.api_key,
+        body      = body,
     })
     if not resp.ok then return resp end
     if resp.status ~= 200 then
@@ -224,6 +258,36 @@ end
 
 function M.learn_trigger(config)
     return route_request(config, "POST", "/learn_trigger", M.TIMEOUT_LEARN_TRIGGER)
+end
+
+function M.notify_plant_correction(config, target_x, target_y, gain)
+    local body = string.format(
+        '{"target_x":%.6f,"target_y":%.6f%s}',
+        tonumber(target_x) or 0,
+        tonumber(target_y) or 0,
+        gain and string.format(',"gain":%.4f', tonumber(gain) or 0) or "")
+    return route_request(config, "POST", "/plant_correction", 5, body)
+end
+
+function M.sync_fixture_log(config, json_body)
+    if not json_body or json_body == "" then
+        return { ok = false, kind = "validation", message = "empty_body" }
+    end
+    local resp = route_request(config, "POST", "/fixture_log", M.TIMEOUT_FIXTURE_LOG, json_body)
+    if not resp.ok then return resp end
+    if resp.status ~= 200 then
+        return M.classify_http(resp.status, resp.body)
+    end
+    return { ok = true, body = resp.body }
+end
+
+function M.fetch_fixture_log(config)
+    local resp = route_request(config, "GET", "/fixture_log", M.TIMEOUT_FIXTURE_LOG)
+    if not resp.ok then return resp end
+    if resp.status ~= 200 then
+        return M.classify_http(resp.status, resp.body)
+    end
+    return { ok = true, body = resp.body }
 end
 
 return M

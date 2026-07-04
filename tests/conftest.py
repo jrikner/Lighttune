@@ -38,6 +38,15 @@ def golden_discover() -> dict:
     return json.loads((FIXTURES_DIR / "bridge_discover_mock.json").read_text())
 
 
+@pytest.fixture(autouse=True)
+def reset_mock_plant():
+    from meter_mock import mock_plant
+
+    mock_plant.reset()
+    yield
+    mock_plant.reset()
+
+
 @pytest.fixture
 def client(monkeypatch):
     monkeypatch.delenv("BRIDGE_API_KEY", raising=False)

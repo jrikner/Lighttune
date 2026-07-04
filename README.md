@@ -1,418 +1,367 @@
-# SekonicCalibrator
+# Lighttune — SekonicCalibrator v1.0
 
-**Lighttune v0.5.0-replan — GrandMA3 Lua Plugin**
-
-Calibrate fixture groups on your GrandMA3 console using measurements from a
-**Sekonic C-700, C-800, or C-7000 spectromaster**. Designed for TV and broadcast
-productions where colour accuracy and consistency across groups is critical.
-
-v0.5.0-replan adds a **thin HTTP bridge** so a C-7000 can be triggered from the plugin.
-**Primary path:** run `sekonic-bridge` on the **same Mac** as GrandMA3 onPC with the meter
-plugged in locally (`bridge_ip: 127.0.0.1`) — no Raspberry Pi required. A Pi on stage
-remains optional when console and meter are on different machines. Manual meter entry
-remains available for all supported meters.
+Calibrate fixture groups on **GrandMA3** using a **Sekonic C-700, C-800, or C-7000**.
+Built for TV and broadcast work where CCT, Duv, CRI, R9, and TLCI need to match across a rig.
 
 ---
 
-## Overview
+## What you get
 
-The plugin walks you through a measurement-driven calibration workflow:
-
-1. Choose from the main menu: **Start Calibration**, **View Fixture History**, or **Bridge Status**
-2. Choose your Sekonic meter model (C-700/C-800 or C-7000)
-3. Set session goals once: target Kelvin, CRI / R9 / TLCI goals, calibration mode
-4. Select a fixture group — make/model are read automatically from the MA3 patch
-5. If historical data exists for the fixture, pre-apply the best known correction
-6. Measure: enter Sekonic readings manually **or** trigger remote C-7000 via the bridge (macOS localhost or Pi on LAN)
-7. Review the quality assessment, correction, and feature-aware hints
-8. Apply — the plugin sets the corrected chromaticity on the group
-9. Re-measure and repeat until happy with the group
-10. Move to the next group
-11. End-of-session summary shows all groups and goal pass/fail
-
-Calibration data is saved locally in `data/fixture_log.json`. Share the file
-manually if you want to contribute fixture data to others.
-
----
-
-## Features
-
-| Feature | Description |
-|---|---|
-| **Two calibration modes** | Calibrate all groups to a set Kelvin target, or measure a reference group first and match everything else to it |
-| **Sekonic C-700/C-800 support** | TLCI input/goals are automatically disabled for meters that don't provide TLCI |
-| **Remote C-7000 measurement** | When `bridge_ip` is set, trigger the stage meter from FOH over HTTP (Pi bridge on show LAN) |
-| **Manual meter fallback** | Always available when the bridge is offline or for C-700/C-800 |
-| **Auto-loop calibration** | With bridge active, up to 3 apply/measure cycles until goals are met |
-| **CRI / R9 / TLCI goals** | Track each metric individually — set a minimum threshold or "as high as possible" |
-| **Conditional gel hints** | Gel suggestions only shown when the fixture has color-wheel filter slots, or when no Tint channel is available (physical gel is the only option), or when deviation is extreme (> ±0.020) |
-| **Feature-aware console hints** | Fixture capabilities from the **MA3 Patch API** — Tint, CTB, CTO, and color wheel hints only when supported |
-| **Fixture name from patch** | Make/model are auto-read from the MA3 patch for the selected group (manual fallback available) |
-| **Patch manufacturer data** | Nominal CCT and CRI from FixtureType metadata (Patch API — no on-disk GDTF file access) |
-| **Historical pre-fill** | Before the first measurement, if the fixture database contains prior data, the best known correction is pre-applied to the group |
-| **Advanced Duv target** | Default 0.000 (neutral); optional custom Duv target for special production requirements |
-| **Per-group inner loop** | Re-measure and re-apply as many times as needed before moving to the next group |
-| **Session summary** | End-of-session table listing every group, its readings, Δ Kelvin, and goal pass/fail |
-| **Fixture database** | Append-only: every measurement is kept; ★ marks the best CRI, R9, TLCI, and Duv entry per fixture/kelvin combination |
-| **In-console history viewer** | Browse previous measurements directly from the plugin's main menu |
-| **Bridge setup wizard** | Discover USB meter on Pi, verify protocol, optional trigger learning (from plugin main menu) |
+- **Two-phase calibration** — whole group first, then each fixture solo
+- **Automatic corrections** — RGB xy, Tint, CTO/CTB, and color-wheel slots when the fixture supports them
+- **Incremental Kelvin presets** — each passing fixture merges into a shared `5600K`-style color preset
+- **CAL / UNCAL groups** — fixtures sorted into calibrated vs not-calibrated groups
+- **C-7000 auto-loop** — bridge triggers the meter and auto-applies corrections (no Apply button each pass)
+- **Local history** — every session saved to `data/fixture_log.json`
 
 ---
 
 ## Requirements
 
-- GrandMA3 console (software v1.6 or later recommended)
-- Sekonic C-700, C-800, or C-7000 spectromaster
-- Fixture groups configured in your showfile
-- **Remote C-7000 (optional):** `sekonic-bridge` running on the same Mac as onPC (primary), or on a Raspberry Pi on the show LAN when console and meter are on different machines (stage-split)
+| Item | Notes |
+|------|--------|
+| GrandMA3 | onPC or console, v1.6+ recommended |
+| Sekonic meter | C-700, C-800, or C-7000 |
+| Fixture groups | Patched and grouped in your showfile |
+| Bridge (optional) | For C-7000 remote measure + hands-free loop. Same Mac as onPC, or a Pi on LAN |
 
 ---
 
 ## Installation
 
-The repo root is **not** the plugin folder — `plugin.xml`, `SekonicCalibrator.lua`,
-`lua/`, and `data/` live loose at repo root alongside dev-only stuff (`tests/`,
-`sekonic-bridge/`, `.github/`). GrandMA3 needs those four, laid out exactly
-right (the entry script `SekonicCalibrator.lua` must sit directly beside
-`plugin.xml`; the four helper modules stay in `lua/`), in a folder **named
-exactly `SekonicCalibrator`** (the plugin code hard-codes that name when it
-looks for its own config and data). `package-plugin.sh` assembles that layout
-for you so you never have to guess which files go where.
+### Step 1 — Get the plugin files
 
-### Quick install (recommended)
+**Option A — from this repo (recommended):**
 
 ```bash
+git clone https://github.com/jrikner/Lighttune.git
+cd Lighttune
+git checkout lighttune-1.0
 ./package-plugin.sh --install
 ```
 
-Builds the plugin folder and copies it straight to the standard GrandMA3
-plugin library path for your OS (macOS/Linux: `~/MALightingTechnology/...`).
-Re-run it any time to upgrade — it overwrites `plugin.xml`, `SekonicCalibrator.lua`,
-and `lua/` but **never touches your `config.json` or saved data**.
+This builds `dist/SekonicCalibrator/` and copies it to your GM3 plugin library.
 
-For Windows, or any non-default location, pass the path explicitly:
+**Option B — manual copy:**
 
 ```bash
-./package-plugin.sh --install "/path/to/gma3_library/datapools/plugins"
+./package-plugin.sh          # builds dist/SekonicCalibrator/
+./package-plugin.sh --zip    # optional: dist/SekonicCalibrator.zip
 ```
 
-Prefer to copy the files yourself (e.g. onto a different machine)? Build the
-folder without installing it:
+Copy the **`SekonicCalibrator`** folder (keep that exact name) to:
+
+| OS | Path |
+|----|------|
+| macOS / Linux | `~/MALightingTechnology/gma3_library/datapools/plugins/SekonicCalibrator/` |
+| Windows | `C:\ProgramData\MALightingTechnology\gma3_library\datapools\plugins\SekonicCalibrator\` |
+
+### Step 2 — Import in GrandMA3
+
+1. Open your showfile
+2. **Menu → Plugin Pool → Import → SekonicCalibrator**
+3. Assign the plugin to a macro key or executor
+4. Double-tap to run
+
+Re-run `./package-plugin.sh --install` any time you update — it overwrites code but **never touches** your `config.json` or saved measurement data.
+
+### Step 3 — Plugin config (optional)
 
 ```bash
-./package-plugin.sh          # writes dist/SekonicCalibrator/
-./package-plugin.sh --zip    # also writes dist/SekonicCalibrator.zip
+cp dist/SekonicCalibrator/data/config.json.example \
+   ~/MALightingTechnology/gma3_library/datapools/plugins/SekonicCalibrator/config.json
 ```
 
-Then copy `dist/SekonicCalibrator/` (the whole folder, keeping that exact
-name) into:
-
-| OS | Plugin library path |
-|---|---|
-| Windows | `C:\ProgramData\MALightingTechnology\gma3_library\datapools\plugins\` |
-| macOS / Linux | `~/MALightingTechnology/gma3_library/datapools/plugins/` |
-
-### In GrandMA3
-
-1. `Menu → Plugin Pool → Import → SekonicCalibrator`
-2. Assign to a macro key or executor, then run by double-tapping the plugin entry.
-
-### Optional — remote C-7000 measurement
-
-Run `sekonic-bridge/setup-mac.sh` on the same Mac as onPC (primary path, no
-Pi needed), or deploy `sekonic-bridge/` to a Raspberry Pi for a stage-split
-setup — see `sekonic-bridge/README.md`. Then set `bridge_ip`/`bridge_port` in
-the plugin's `config.json` (see **Configuration** below).
-
----
-
-## Configuration
-
-There are **three** separate config files in this project — don't mix them up:
-
-| File | Lives where | Edited by | Purpose |
-|---|---|---|---|
-| **`config.json`** | Plugin root — `SekonicCalibrator/config.json`, next to `plugin.xml`, **not** inside `data/` | You | Tells the **GrandMA3 plugin** the bridge's address and your GitHub username |
-| **`bridge_config.json`** | `sekonic-bridge/bridge_config.json`, next to `server.py` | You (optional) | Tells the **bridge server** an API key to require, if you want auth |
-| **`device_config.json`** | Same folder as `server.py` | The bridge itself | Auto-written by `/discover` — meter VID/PID, protocol state. Never edit by hand |
-
-### `config.json` (the one you need)
-
-Copy the example into your installed plugin folder and edit it:
-
-```bash
-cp data/config.json.example ~/MALightingTechnology/gma3_library/datapools/plugins/SekonicCalibrator/config.json
-```
+Edit `config.json` at the **plugin root** (same folder as `plugin.xml`):
 
 ```json
 {
-  "github_username": "your_github_username",
-  "bridge_ip":        "127.0.0.1",
-  "bridge_port":      8765,
-  "bridge_api_key":   ""
+  "github_username": "your_name",
+  "bridge_ip":       "127.0.0.1",
+  "bridge_port":     8765,
+  "focus_preset":    "2.12"
 }
 ```
 
 | Field | Purpose |
-|---|---|
-| `github_username` | Stored as `contributor` in `data/fixture_log.json` (optional) |
-| `bridge_ip` | `127.0.0.1` if the bridge runs on the same Mac as onPC (primary path); a LAN IP (e.g. `192.168.1.50`) for a Pi on a different machine |
-| `bridge_port` | Bridge HTTP port (default **8765** if omitted) |
-| `bridge_api_key` | Only needed if the bridge has a `bridge_api_key` configured (see `sekonic-bridge/README.md`) |
+|-------|---------|
+| `bridge_ip` | `127.0.0.1` = bridge on same Mac as onPC. Or Pi IP on LAN |
+| `bridge_port` | Default `8765` |
+| `focus_preset` | Position preset (pool 2) with fixtures aimed at the Sekonic. Skips the session prompt if set |
+| `bridge_api_key` | Optional shared secret if the bridge requires auth |
 
-`config.json` is gitignored and must never contain secrets committed to git.
+### Step 4 — Bridge setup (C-7000 remote measure only)
 
-Runtime data paths stay under `data/`:
-- `data/fixture_log.json` — append-only fixture history
-- `data/measurements/` — reserved for future use
-
----
-
-## Remote Measurement (C-7000 + Pi Bridge)
-
-When `bridge_ip` is configured:
-
-1. Open the plugin → **Bridge Status** to verify connection
-2. During calibration, choose **remote measure** when prompted (manual entry always available)
-3. The plugin calls the Pi over **HTTP/1.0 (LuaSocket TCP)** — no HTTPS on GrandMA3
-4. On failure: retry remote, enter values manually, or cancel
-
-**Bridge setup commands** (`curl`, USB discovery) run on the **Pi terminal**, not on the GrandMA3 console. Example from the Pi:
+**Same Mac as onPC (easiest):**
 
 ```bash
-curl http://localhost:8765/status
-curl -X POST http://localhost:8765/measure
+cd sekonic-bridge
+./setup-mac.sh
 ```
 
-See `sekonic-bridge/README.md` for Pi deployment, mock mode (`--mock`), and USB setup.
+Plug the C-7000 in via USB. Open the dashboard: **http://127.0.0.1:8765/dashboard**
+
+Set `"bridge_ip": "127.0.0.1"` in plugin `config.json`.
+
+**Pi on stage (console and meter on different machines):**
+
+See [`sekonic-bridge/README.md`](sekonic-bridge/README.md) for Pi deployment.
 
 ---
 
-## Calibration Modes
+## Before your first calibration
 
-### Calibrate to Target
-Standard mode. Set a target Kelvin (e.g., 5600K) and optionally a target Duv
-(default 0.000). Every group is corrected to this fixed target.
+Do this once per show (or per rig setup):
 
-### Match to Reference Group
-Use when you have one fixture group that defines the "correct" look — for
-example, existing HMIs or a fixed key light that can't be adjusted. The plugin
-measures the reference group's CCT and Duv first, then uses those values as the
-correction target for all other groups.
+### 1. Create a focus position preset
+
+1. Select all fixtures you will calibrate
+2. Point pan/tilt (and XYZ if needed) at the Sekonic meter position
+3. **Store Preset 2.x** (Position pool) — e.g. Preset `2.12` named `"Sekonic focus"`
+
+The plugin applies **position only** from this preset before each measurement. Dimmer and color are handled by the plugin.
+
+### 2. Create your calibration groups
+
+- One GM3 **group** per batch you want to calibrate together (e.g. `Front Wash`, group `3`)
+- Fixtures must be patched with correct fixture types (GDTF) so the plugin can detect Tint, CTO, CTB, etc.
+
+### 3. Full intensity at the meter
+
+During calibration the plugin automatically:
+
+- **Solos** the target (group or single fixture)
+- Sets **dimmer to 100%**
+- Enables **all color attributes** on the fixture
+- Applies your **focus position preset**
 
 ---
 
-## Supported Sekonic Meters
+## How to use — step-by-step workflow
 
-| Model | CCT | Duv | CRI (Ra) | R9 | TLCI | Remote via bridge |
-|---|---|---|---|---|---|---|
+### Session start
+
+| Step | What happens |
+|------|----------------|
+| **1** | Run the plugin → **Start Calibration** |
+| **2** | Choose meter: **C-700/C-800** or **C-7000** |
+| **3** | Set goals: target Kelvin(s), Duv, CRI / R9 / TLCI minimums |
+| **4** | Bridge preflight (C-7000 only) — confirms bridge is reachable |
+| **5** | Enter fixture group(s) — one at a time or comma-separated (`1, 3, Front Wash`) |
+| **6** | Enter **focus position preset** — e.g. `2.12` or `12` (skipped if set in `config.json`) |
+
+### Per group, per Kelvin target
+
+For each group at each Kelvin target (e.g. 3200K then 5600K):
+
+#### Phase 1 — Group pass
+
+```
+Whole group selected → solo → focus preset → dimmer 100% → measure → correct → repeat
+```
+
+- First measurement: enter Sekonic values manually, or **Remote** if bridge is active
+- **Manual mode:** Assessment dialog → **Apply** or **Skip** each correction
+- **Bridge mode (C-7000):** corrections auto-apply, no Apply button; loops until goals met
+- When goals are met (or limit reached): color merges into Kelvin preset; group pass ends
+
+#### Phase 2 — Individual fixtures
+
+```
+For each fixture in the group:
+  solo one fixture → focus preset → dimmer 100% → measure → correct → repeat
+  on pass → merge into Kelvin preset + add to CAL group
+  on fail → add to UNCAL group
+```
+
+- Same manual vs bridge behaviour as Phase 1
+- Each fixture gets its own correction (units drift differently)
+
+### Session end
+
+- **Session summary** lists every group, readings, and pass/fail
+- Data saved to `data/fixture_log.json`
+- View history anytime: plugin menu → **View Fixture History**
+
+---
+
+## Workflow diagram
+
+```mermaid
+flowchart TD
+    A[Start Calibration] --> B[Set goals + meter]
+    B --> C[Select groups + focus preset]
+    C --> D[For each Kelvin target]
+    D --> E[Phase 1: Group pass]
+    E --> F{Goals met?}
+    F -->|No| G[Apply correction]
+    G --> H[Re-measure]
+    H --> F
+    F -->|Yes| I[Phase 2: Each fixture solo]
+    I --> J{Fixture goals met?}
+    J -->|No| K[Apply correction]
+    K --> L[Re-measure]
+    L --> J
+    J -->|Yes| M[Save to Kelvin preset + CAL group]
+    J -->|Fail| N[Save to UNCAL group]
+    M --> O{More fixtures?}
+    N --> O
+    O -->|Yes| I
+    O -->|No| P{More groups / Kelvin?}
+    P -->|Yes| D
+    P -->|No| Q[Session summary]
+```
+
+---
+
+## Taking Sekonic readings
+
+1. Meter in **Incident** mode, dome up
+2. Dome toward the light source, at the subject position
+3. Press **Measure** on the meter
+4. Enter in the plugin (or use **Remote** with C-7000 + bridge):
+
+| Reading | On meter | Meaning |
+|---------|----------|---------|
+| **CCT** | Main display | Colour temperature (Kelvin) |
+| **Duv (Δuv)** | Deviation field | Green (+) / magenta (−) vs neutral locus |
+| **CRI Ra** | CRI screen | General colour rendering |
+| **R9** | CRI → R1–R15 | Deep red (skin tones, costumes) |
+| **TLCI** | TLCI screen | Broadcast camera index (C-7000 only) |
+
+---
+
+## What the plugin saves
+
+| Output | Where | When |
+|--------|-------|------|
+| **Kelvin color preset** | Preset pool 4 — e.g. `4.5 "5600K"` | First pass creates; each fixture merges |
+| **CAL group** | Group pool | Fixtures that met goals |
+| **UNCAL group** | Group pool | Fixtures that did not |
+| **Measurement log** | `data/fixture_log.json` | After each group completes |
+
+---
+
+## Color math — what's proven vs practical
+
+The plugin uses **standard colorimetry** for geometry and **closed-loop feedback** for corrections. Some tuning constants are engineering choices, not physics laws.
+
+### Standard (published / tested)
+
+| Piece | Basis |
+|-------|--------|
+| **CCT → xy** | Kang et al. (2002) — Planckian locus polynomials, 1667–25000 K |
+| **xy ↔ u′v′** | CIE 1960/1976 transforms |
+| **Duv** | Same family as Sekonic: distance from the locus in u′v′ (green/magenta) |
+| **xy → RGB → HSB** | sRGB matrix + standard HSB (for GM3 `SetColor` fallback) |
+| **Closed-loop correction** | Error feedback in u′v′: `next_command = last_command + (target − measured)` |
+
+Unit tests in `tests/test_color_math.lua` verify Kang reference values, u′v′ roundtrips, and correction direction.
+
+### Practical approximations (tuned for desk workflow)
+
+| Piece | Notes |
+|-------|--------|
+| **Duv → xy shift** | `Δv′ = ΔDuv × 1.5` — scaling heuristic |
+| **Sekonic CCT → Kang xy** | Meter and plugin use different CCT algorithms; closed-loop compensates |
+| **Tint / CTO / CTB gains** | Fixed step sizes per Kelvin and Duv error — fixture-dependent |
+| **GAIN = 1.0** | Full proportional step; may overshoot on nonlinear fixtures |
+
+### What gets applied each correction
+
+1. **Tint** — Duv error (if fixture has Tint channel)
+2. **CTO / CTB** — CCT error (warmer / cooler)
+3. **Color wheel slot** — if no dedicated Tint/CTO/CTB (matched by slot name from GDTF)
+4. **SetColor xyY** — fine RGB mix adjustment (falls back to HSB)
+
+All color attributes are activated before store, so the full color state merges into the Kelvin preset.
+
+---
+
+## Bridge & web dashboard
+
+When the bridge is running:
+
+| URL | Purpose |
+|-----|---------|
+| `http://127.0.0.1:8765/dashboard` | Live status, meter model, reconnect |
+| `http://127.0.0.1:8765/status` | JSON health check |
+| `POST /measure` | Trigger a reading (used by the plugin) |
+
+**Bridge mode behaviour:**
+
+- Auto-measures after each apply (no manual entry unless bridge drops)
+- Auto-applies corrections (no Assessment Apply/Skip)
+- Still shows save review when a fixture passes or fails
+
+---
+
+## Calibration modes
+
+### Calibrate to target (default)
+
+Set fixed Kelvin target(s) — e.g. `5600K` — and optional Duv (default `0.000` neutral). Every group and fixture is corrected to that target.
+
+### Match to reference group
+
+Measure a reference group first (e.g. existing HMIs). All other groups are matched to that group's CCT and Duv.
+
+---
+
+## Supported meters
+
+| Model | CCT | Duv | CRI | R9 | TLCI | Bridge auto-loop |
+|-------|-----|-----|-----|----|------|------------------|
 | C-700 | ✓ | ✓ | ✓ | ✓ | — | Manual entry only |
 | C-800 | ✓ | ✓ | ✓ | ✓ | — | Manual entry only |
-| C-7000 | ✓ | ✓ | ✓ | ✓ | ✓ | Pi bridge or manual |
-
-Select your meter at the start of each session. The plugin automatically disables
-TLCI input and goals when C-700 or C-800 is selected.
+| C-7000 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ with bridge |
 
 ---
 
-## How to Take Measurements with the Sekonic
+## Troubleshooting
 
-1. Set the meter to **Incident** mode (dome up).
-2. Position the meter at the subject position, dome toward the lighting grid.
-3. Press **Measure**.
-4. Note the following from the results screen:
-
-   | Reading | Where on the meter | Description |
-   |---|---|---|
-   | **CCT (Tcp)** | Main display | Correlated Colour Temperature in Kelvin |
-   | **Duv (Δuv)** | "Deviation" field | Distance from Planckian locus (+green / -magenta) |
-   | **CRI Ra** | CRI screen | General Colour Rendering Index |
-   | **R9** | CRI screen → R1–R15 | Deep red rendering value |
-   | **TLCI** | TLCI/TLMF screen (C-7000 only) | Television Lighting Consistency Index |
-
-For C-7000 with bridge configured, you can trigger measurement from the console
-instead of typing values manually.
+| Problem | Fix |
+|---------|-----|
+| Plugin won't import | Folder must be named exactly `SekonicCalibrator`; `SekonicCalibrator.lua` must sit beside `plugin.xml` |
+| Phase 2 skipped | Plugin couldn't read fixture list — re-select group in Patch; check group has members |
+| Bridge unavailable | Run `./setup-mac.sh`; check `http://127.0.0.1:8765/status`; verify `bridge_ip` in config |
+| Wrong fixture type | Group must be selected before lookup; check patch/fixture type in MA3 |
+| Preset empty after save | Ensure color attributes are on fixture type; check Preset pool 4 |
+| `require("goals")` crash | Re-import plugin — domain modules load from `lua/` via `loadfile`, not GM3 cache |
 
 ---
 
-## Understanding the Readings
-
-### CCT (Kelvin)
-| Value | Description |
-|---|---|
-| 2700–3200 K | Tungsten / warm |
-| 4000–4500 K | Fluorescent |
-| 5500–5600 K | Daylight / HMI |
-| 6000–6500 K | Overcast daylight |
-
-### Duv — Green-Magenta Shift
-| Duv | Appearance | Gel correction |
-|---|---|---|
-| > +0.016 | Strong green cast | Full Minus Green |
-| +0.010 to +0.016 | Noticeable green | 1/2 Minus Green |
-| +0.006 to +0.010 | Slight green | 1/4 Minus Green |
-| +0.003 to +0.006 | Minor green tint | 1/8 Minus Green |
-| −0.003 to +0.003 | Neutral (on-locus) | No correction needed |
-| −0.006 to −0.003 | Minor magenta | 1/8 Plus Green |
-| −0.010 to −0.006 | Slight magenta | 1/4 Plus Green |
-| −0.016 to −0.010 | Noticeable magenta | 1/2 Plus Green |
-| < −0.016 | Strong magenta cast | Full Plus Green |
-
-Gel hints are only shown when:
-- The fixture has colour-wheel filter slots (detected via Patch API), **or**
-- The fixture has no Tint DMX channel (physical gel is the only correction option), **or**
-- The Duv deviation exceeds ±0.020 (beyond the typical Tint channel range)
-
-### CRI (Ra) — Colour Rendering Index
-
-| CRI | Broadcast rating |
-|---|---|
-| ≥ 95 | Excellent — broadcast ready |
-| 90–94 | Good — professional standard |
-| 80–89 | Acceptable |
-| < 80 | Poor — not recommended |
-
-### R9 — Deep Red Rendering
-Critical for skin tones, red costumes, and props on camera.
-
-| R9 | Rating |
-|---|---|
-| ≥ 90 | Excellent |
-| 80–89 | Good |
-| 50–79 | Acceptable |
-| < 50 | Poor — reds appear dull/brown on camera |
-
-### TLCI — Television Lighting Consistency Index
-Broadcast-camera-specific rating (EBU standard). More relevant than CRI for
-3-chip video cameras. Available on Sekonic C-7000 only.
-
-| TLCI | Rating |
-|---|---|
-| ≥ 90 | Excellent — television ready |
-| 75–89 | Good — minimal correction needed |
-| 50–74 | Acceptable — correction required |
-| < 50 | Poor — not suitable for broadcast |
-
----
-
-## Fixture Capability Detection
-
-The plugin reads fixture colour capabilities directly from the **MA3 Patch API**
-(`DataPool → Groups → FixtureType → DMXModes → DMXChannels → LogicalChannels`).
-GrandMA3 already has GDTF attribute data parsed in memory — **no on-disk GDTF
-file access** (and `io.popen` / shell commands are not available in GrandMA3
-Lua).
-
-Correction hints in the assessment screen are tailored to what the fixture can
-actually do:
-
-| Capability detected | Hint shown |
-|---|---|
-| `Tint` DMX attribute | Suggest adjusting Tint channel to correct Duv |
-| `CTB` attribute | Suggest using CTB to reduce CCT |
-| `CTO` attribute | Suggest using CTO to raise CCT |
-| `ColorWheel` attribute | Suggest checking color wheel for correction filter slots |
-| Manufacturer CCT / CRI on FixtureType | Shown as reference when entering measurements |
-
-Gel hints (physical external filters) are always shown when no Tint channel is
-available, and as a fallback option when a colour wheel is present.
-
----
-
-## Fixture Database
-
-After calibrating each group, the plugin saves a measurement record to:
-```
-SekonicCalibrator/data/fixture_log.json
-```
-
-### Schema
-
-The database is **append-only**: every measurement is kept as a separate record.
-Best-value flags (`best_cri`, `best_r9`, `best_tlci`, `best_duv`) are
-recomputed after every new entry and mark which record holds the best value for
-each metric within a given fixture + Kelvin combination:
-
-```json
-[
-  {
-    "make": "Aputure",
-    "model": "600X Pro",
-    "kelvin": 5600,
-    "date": "2026-03-13",
-    "contributor": "jrikner",
-    "cct": 5572,
-    "duv": 0.0030,
-    "cri": 95,
-    "r9": 88,
-    "tlci": 91,
-    "best_cri": true,
-    "best_r9": true,
-    "best_tlci": true,
-    "best_duv": true
-  }
-]
-```
-
-**Rules:**
-- Every measurement is always appended — nothing is overwritten
-- `best_*` flags are omitted when false (only written when `true`)
-- Records are sorted: make A→Z, then model A→Z, then kelvin low→high, then date old→new
-
----
-
-## In-Console Fixture History Viewer
-
-From the plugin's main menu, select **View Fixture History** to browse all
-previously recorded measurements without starting a calibration session.
-
-- Search by make or model name (partial match)
-- Results are grouped by Kelvin, with ★ marking the best value for each metric
-- Shows all historical entries so you can track how a fixture performs over time
-
----
-
-## Colour Math Notes
-
-- **CCT → xy** via Kang et al. (2002) piecewise cubic, valid 1667 K–25 000 K
-- **Duv correction** by shifting v' in CIE 1976 u'v' space (Δv' = ΔDuv × 1.5)
-- **SetColor** uses `"xyY"` for precision; falls back to `"HSB"` for fixtures
-  that don't support the xyY colour model (brightness preserved at 1.0)
-
----
-
-## Running the Unit Tests
-
-Primary host test entry point:
+## Running tests
 
 ```bash
+# Lua (color math, goals, mock sequences)
 lua5.4 tests/run.lua
-```
 
-Backward-compatible alias (delegates to `tests/run.lua`):
-
-```bash
-lua5.4 test_color_math.lua
-```
-
-Expected: **133+ passed, 0 failed** (ROADMAP minimum: 126+).
-
-### Bridge route tests (mock meter, no USB)
-
-```bash
+# Python (bridge API, dashboard, C-7000 driver)
 python3 -m venv .venv
 .venv/bin/pip install -r sekonic-bridge/requirements.txt -r sekonic-bridge/requirements-dev.txt
-.venv/bin/pytest tests/test_bridge_routes.py -v
+.venv/bin/pytest tests -v
 ```
 
-### Continuous integration
+---
 
-GitHub Actions workflow [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs both suites on push and pull request to `claude/lighttune-main` and `cursor/**` branches. No console, Pi hardware, or USB devices are required in CI.
+## Project layout
+
+```
+Lighttune/
+├── SekonicCalibrator.lua    # GM3 plugin entry point
+├── plugin.xml
+├── lua/                     # Domain modules (color math, goals, bridge client, fixture DB)
+├── data/                    # config example + fixture_log.json at runtime
+├── sekonic-bridge/          # HTTP bridge + web dashboard (server.py)
+├── package-plugin.sh        # Build + install to GM3 library
+└── tests/                   # Lua + Python test suites
+```
 
 ---
 
 ## License
 
-MIT — free to use and modify.
+MIT — part of the [Lighttune](https://github.com/jrikner/Lighttune) project.
 
-Part of the [Lighttune](https://github.com/jrikner/Lighttune) project.
+**Branch:** `lighttune-1.0`
