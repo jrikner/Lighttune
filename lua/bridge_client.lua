@@ -260,6 +260,15 @@ function M.learn_trigger(config)
     return route_request(config, "POST", "/learn_trigger", M.TIMEOUT_LEARN_TRIGGER)
 end
 
+function M.notify_plant_correction(config, target_x, target_y, gain)
+    local body = string.format(
+        '{"target_x":%.6f,"target_y":%.6f%s}',
+        tonumber(target_x) or 0,
+        tonumber(target_y) or 0,
+        gain and string.format(',"gain":%.4f', tonumber(gain) or 0) or "")
+    return route_request(config, "POST", "/plant_correction", 5, body)
+end
+
 function M.sync_fixture_log(config, json_body)
     if not json_body or json_body == "" then
         return { ok = false, kind = "validation", message = "empty_body" }

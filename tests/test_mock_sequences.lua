@@ -21,8 +21,8 @@ return function(M)
         r9  = { mode = goals.GOAL_MIN, value = data.target.r9_min },
     }
 
-    M.section("mock sequences – five fixtures present, covering distinct behaviors")
-    M.assert_equal("fixture count", #data.fixtures, 5)
+    M.section("mock sequences – six fixtures present, covering distinct behaviors")
+    M.assert_equal("fixture count", #data.fixtures, 6)
 
     local behaviors_seen = { met = 0, stagnant = 0, hard_cap = 0 }
 
@@ -43,7 +43,7 @@ return function(M)
             M.assert_near(string.format("%s attempt %d error_score recomputes", fx.name, a.attempt),
                 score, a.error_score, 0.01)
             M.assert_equal(string.format("%s attempt %d improved flag", fx.name, a.attempt),
-                stagnation.improved, a.improved)
+                goals.has_improved(score, prev_score), a.improved)
             M.assert_equal(string.format("%s attempt %d goals_met flag", fx.name, a.attempt),
                 met, a.goals_met)
             M.assert_equal(string.format("%s attempt %d stagnant_count", fx.name, a.attempt),

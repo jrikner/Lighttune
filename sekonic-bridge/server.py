@@ -102,6 +102,13 @@ async def verify_bridge_key(
         )
 
 
+def _atomic_write_text(path: Path, content: str) -> None:
+    """Write file atomically via temp + replace."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(content)
+    tmp.replace(path)
+
+
 def _load_device_config() -> dict:
     """Load device_config.json if it exists, else return empty dict."""
     if DEVICE_CONFIG_PATH.exists():
@@ -114,7 +121,7 @@ def _load_device_config() -> dict:
 
 def _save_device_config(cfg: dict) -> None:
     """Persist device_config.json atomically."""
-    DEVICE_CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
+    _atomic_write_text(DEVICE_CONFIG_PATH, json.dumps(cfg, indent=2))
 
 
 def _is_device_configured() -> bool:
@@ -163,7 +170,7 @@ def _load_fixture_log() -> list[dict]:
 
 def _save_fixture_log(records: list[dict]) -> None:
     global _fixture_log_updated_at
-    FIXTURE_LOG_PATH.write_text(json.dumps(records, indent=2))
+    _atomic_write_text(FIXTURE_LOG_PATH, json.dumps(records, indent=2))
     _fixture_log_updated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -267,8 +274,8 @@ def _load_meter(use_mock: bool):
     """Instantiate and connect the appropriate meter backend."""
     global _meter, _last_error
     if use_mock:
-        from meter_mock import MockMeter
-        backend = MockMeter()
+        from meter_mock import MockMeter, mock_plant
+        backend = MockMeter(mock_plant)
         log.info("Using MOCK meter backend (development mode)")
     else:
         from meter_c7000_bulk import C7000Bulk
@@ -1348,6 +1355,40 @@ async def learn_trigger():
                        "See README for Wireshark capture fallback.",
         }
     )
+
+
+@app.post("/plant_correction", dependencies=_auth)
+async def plant_correction(request: Request):
+    """
+    Mock-mode only: tell the reactive plant model what xy the console applied.
+    Ignored when not running with --mock (returns ok/ignored).
+    """
+    if not _use_mock_global:
+        return {"ok": True, "ignored": True, "reason": "not_mock_mode"}
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "invalid_json", "hint": "Send JSON with target_x and target_y"},
+        )
+
+    target_x = body.get("target_x")
+    target_y = body.get("target_y")
+    if target_x is None or target_y is None:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "missing_fields",
+                    "hint": "target_x and target_y are required"},
+        )
+
+    from meter_mock import mock_plant
+
+    gain = body.get("gain")
+    mock_plant.apply_command(float(target_x), float(target_y),
+                             float(gain) if gain is not None else None)
+    return {"ok": True, "active": True, "gain": mock_plant.gain}
 
 
 @app.post("/measure", dependencies=_auth)

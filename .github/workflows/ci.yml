@@ -34,6 +34,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r sekonic-bridge/requirements.txt -r sekonic-bridge/requirements-dev.txt
-      - name: Run bridge route tests
-        run: pytest tests/test_bridge_routes.py -v --tb=short
-        timeout-minutes: 5
+      - name: Run bridge test suite
+        run: pytest tests -v --tb=short
+        timeout-minutes: 10

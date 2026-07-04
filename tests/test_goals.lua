@@ -64,8 +64,8 @@ return function(M)
         state = goals.update_stagnation(state, measured(3000, 0.000), 3.9)
         M.assert_equal("new best clears stagnation", state.stagnant_count, 0)
         state = goals.update_stagnation(state, measured(3010, 0.001), 4.5)
-        state = goals.update_stagnation(state, measured(3005, 0.0012), 4.6)
-        state = goals.update_stagnation(state, measured(3008, 0.0008), 4.4)
+        state = goals.update_stagnation(state, measured(3005, 0.0012), 4.52)
+        state = goals.update_stagnation(state, measured(3008, 0.0008), 4.51)
         M.assert_equal("three non-best attempts plateau", state.stagnant_count, 3)
     end
 

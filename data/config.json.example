@@ -19,5 +19,8 @@
   "open_bridge_browser": false,
 
   "_comment_bridge_auto_continue_sec": "Hands-free bridge mode: seconds before auto-continuing past info dialogs (default 3, set 0 to skip pause)",
-  "bridge_auto_continue_sec": 3
+  "bridge_auto_continue_sec": 3,
+
+  "_comment_bridge_settle_sec": "Seconds to wait after applying a correction before bridge re-measures (default 3, set 0 to skip)",
+  "bridge_settle_sec": 3
 }

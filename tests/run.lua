@@ -12,12 +12,16 @@ local run_fixture_db = require("test_fixture_db")
 local run_goals = require("test_goals")
 local run_bridge_client = require("test_bridge_client")
 local run_mock_sequences = require("test_mock_sequences")
+local run_gdtf_caps = require("test_gdtf_caps")
+local run_closed_loop = require("test_closed_loop")
 
 run_color_math(M)
 run_fixture_db(M)
 run_goals(M)
 run_bridge_client(M)
+run_closed_loop(M)
 run_mock_sequences(M)
+run_gdtf_caps(M)
 
 local PASS, FAIL = M.get_counts()
 

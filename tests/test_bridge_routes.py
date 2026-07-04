@@ -21,6 +21,14 @@ def test_status_mock(client, golden_status):
     assert data["last_error"] is None or isinstance(data["last_error"], str)
 
 
+def test_plant_correction_mock(client):
+    resp = client.post("/plant_correction", json={"target_x": 0.33, "target_y": 0.34})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ok"] is True
+    assert data.get("active") is True
+
+
 def test_measure_mock(client, golden_measure):
     resp = client.post("/measure")
     assert resp.status_code == 200

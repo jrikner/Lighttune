@@ -53,8 +53,8 @@ def test_dashboard_reachable_without_key_when_auth_not_configured(client):
 def test_dashboard_contains_expected_page_scaffold(client):
     resp = client.get("/dashboard")
     html = resp.text
-    assert "Sekonic Bridge" in html
-    assert "statusGrid" in html
+    assert "SEKONIC BRIDGE" in html
+    assert "telemetry" in html
     assert "/status" in html
     assert "/device_model" in html
     assert "/restart" in html

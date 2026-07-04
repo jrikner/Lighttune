@@ -84,11 +84,54 @@ end
 -- Open-loop (prev_x/prev_y nil): the first attempt has no fixture response
 -- yet to learn from, so this returns the direct cct/duv → xy conversion,
 -- same as the original behaviour.
-function M.get_correction(tgt_cct, tgt_duv, meas_cct, meas_duv, prev_x, prev_y)
+M.GAIN_U_BASE = 1.0
+M.GAIN_V_BASE = 0.85
+M.NATIVE_ONLY_CCT_K = 80
+M.NATIVE_ONLY_DUV   = 0.005
+
+function M.normalized_error_mag(delta_cct, delta_duv)
+    return math.sqrt((delta_cct / 100) ^ 2 + (delta_duv / 0.01) ^ 2)
+end
+
+-- Adaptive closed-loop gains: damp on oscillation (sign flip) and when error shrinks.
+function M.compute_closed_loop_gains(delta_cct, delta_duv, opts)
+    opts = opts or {}
+    local gain_u = M.GAIN_U_BASE
+    local gain_v = M.GAIN_V_BASE
+
+    if opts.prev_delta_cct and (opts.prev_delta_cct * delta_cct) < 0 then
+        gain_u = gain_u * 0.5
+    end
+    if opts.prev_delta_duv and (opts.prev_delta_duv * delta_duv) < 0 then
+        gain_v = gain_v * 0.5
+    end
+
+    local err_mag = M.normalized_error_mag(delta_cct, delta_duv)
+    if opts.prev_error_mag and err_mag < opts.prev_error_mag then
+        gain_u = gain_u * 0.85
+        gain_v = gain_v * 0.85
+    end
+
+    return gain_u, gain_v, err_mag
+end
+
+function M.should_use_setcolor_xy(correction, caps)
+    if not correction then return false end
+    if not caps or not caps.has_native_color_channels then return true end
+    local dk = math.abs(correction.delta_cct or 0)
+    local dd = math.abs(correction.delta_duv or 0)
+    return dk < M.NATIVE_ONLY_CCT_K and dd < M.NATIVE_ONLY_DUV
+end
+
+function M.get_correction(tgt_cct, tgt_duv, meas_cct, meas_duv, prev_x, prev_y, opts)
     local tx, ty = M.cct_to_xy(tgt_cct)
     tx, ty = M.apply_duv_correction(tx, ty, 0, tgt_duv)
 
     local target_x, target_y = tx, ty
+    local delta_cct = tgt_cct - meas_cct
+    local delta_duv = tgt_duv - meas_duv
+    local gain_u, gain_v = M.GAIN_U_BASE, M.GAIN_V_BASE
+    local err_mag = M.normalized_error_mag(delta_cct, delta_duv)
 
     if prev_x and prev_y then
         local mx, my = M.cct_to_xy(meas_cct)
@@ -98,9 +141,9 @@ function M.get_correction(tgt_cct, tgt_duv, meas_cct, meas_duv, prev_x, prev_y)
         local tgt_up,  tgt_vp  = M.xy_to_uvp(tx, ty)
         local prev_up, prev_vp = M.xy_to_uvp(prev_x, prev_y)
 
-        local GAIN = 1.0
-        local next_up = prev_up + GAIN * (tgt_up - meas_up)
-        local next_vp = prev_vp + GAIN * (tgt_vp - meas_vp)
+        gain_u, gain_v, err_mag = M.compute_closed_loop_gains(delta_cct, delta_duv, opts)
+        local next_up = prev_up + gain_u * (tgt_up - meas_up)
+        local next_vp = prev_vp + gain_v * (tgt_vp - meas_vp)
 
         target_x, target_y = M.uvp_to_xy(next_up, next_vp)
     end
@@ -110,8 +153,11 @@ function M.get_correction(tgt_cct, tgt_duv, meas_cct, meas_duv, prev_x, prev_y)
         target_y     = target_y,
         target_cct   = tgt_cct,
         measured_cct = meas_cct,
-        delta_cct    = tgt_cct - meas_cct,
-        delta_duv    = tgt_duv - meas_duv,
+        delta_cct    = delta_cct,
+        delta_duv    = delta_duv,
+        gain_u       = gain_u,
+        gain_v       = gain_v,
+        error_mag    = err_mag,
     }
 end
 

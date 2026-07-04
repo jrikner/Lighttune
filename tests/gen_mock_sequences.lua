@@ -114,10 +114,22 @@ local PROFILES = {
                .. "down fast enough to land inside tolerance before the hard "
                .. "attempt cap -- a fixture that genuinely needs a technician, "
                .. "not more auto-correction passes.",
-        gain = 1.9,
+        gain = 2.4,
         cri0 = 88, cri_ceiling = 93,
         r90 = 46,  r9_ceiling = 56,
         quality_decay = 0.50,
+    },
+    {
+        name = "hard_cap_exhaust",
+        fixture_id = 44,
+        make_model = "Generic / Unstable RGB Matrix (uncalibrated gain)",
+        hw_note = "Plant gain far above 1.0 even with adaptive damping — error "
+               .. "sign keeps flipping but magnitude never shrinks enough to "
+               .. "meet goals within MAX_ATTEMPTS_HARD.",
+        gain = 5.0,
+        cri0 = 86, cri_ceiling = 92,
+        r90 = 41,  r9_ceiling = 54,
+        quality_decay = 0.55,
     },
 }
 
@@ -149,7 +161,9 @@ for _, profile in ipairs(PROFILES) do
 
     local measured_x, measured_y = cct_duv_to_xy(TARGET.cct + START_OFFSET_CCT, START_OFFSET_DUV)
     local applied_x, applied_y = nil, nil
+    local correction_opts = {}
     local stagnation = { best_score = nil, stagnant_count = 0 }
+    local prev_score = nil
     local frozen = nil
     local met_at, stagnated_at, hard_cap_hit = nil, nil, false
 
@@ -159,7 +173,14 @@ for _, profile in ipairs(PROFILES) do
         if attempt > 1 then
             -- Real closed-loop correction, exactly as the desk computes it.
             local last_cct, last_duv = xy_to_cct_duv(measured_x, measured_y)
-            local corr = color_math.get_correction(TARGET.cct, TARGET.duv, last_cct, last_duv, applied_x, applied_y)
+            local corr = color_math.get_correction(
+                TARGET.cct, TARGET.duv, last_cct, last_duv,
+                applied_x, applied_y, correction_opts)
+            correction_opts = {
+                prev_delta_cct = corr.delta_cct,
+                prev_delta_duv = corr.delta_duv,
+                prev_error_mag = corr.error_mag,
+            }
             local new_applied_x, new_applied_y = corr.target_x, corr.target_y
 
             if profile.stuck_after and attempt > profile.stuck_after then
@@ -203,12 +224,14 @@ for _, profile in ipairs(PROFILES) do
 
         local measured = { cct = cct, duv = duv, cri = cri, r9 = r9 }
         local score = goals.error_score(measured, TARGET)
+        local improved = goals.has_improved(score, prev_score)
         stagnation = goals.update_stagnation(stagnation, measured, score)
         local met = goals.goals_met(measured, TARGET)
+        prev_score = score
 
         out[#out+1] = string.format(
             "        { attempt=%d, cct=%d, duv=%.4f, cri=%d, r9=%d, error_score=%.4f, improved=%s, goals_met=%s, stagnant_count=%d, reading_plateau=%s },",
-            attempt, cct, duv, cri, r9, score, tostring(stagnation.improved), tostring(met),
+            attempt, cct, duv, cri, r9, score, tostring(improved), tostring(met),
             stagnation.stagnant_count, tostring(stagnation.reading_plateau or false))
 
         if met and not met_at then met_at = attempt end

@@ -803,6 +803,74 @@ local function find_group(group_name)
     return grp
 end
 
+-- Verify every named group exists in the showfile before calibration starts.
+local function validate_group_list(display, group_list)
+    if not group_list or #group_list == 0 then return false end
+    local missing = {}
+    for _, name in ipairs(group_list) do
+        if not find_group(name) then
+            missing[#missing + 1] = tostring(name)
+        end
+    end
+    if #missing == 0 then return true end
+    MessageBox({
+        title   = "Group Not Found",
+        message = "These fixture groups were not found in the showfile:\n\n  "
+               .. table.concat(missing, "\n  ")
+               .. "\n\nCheck Patch → Groups and try again.",
+        display_handle = display,
+        buttons = {"OK"},
+    })
+    return false
+end
+
+-- Duplicate existing Kelvin presets before the session merges into them.
+local function backup_session_presets(display, cct_list)
+    if not cct_list or #cct_list == 0 then return end
+    for _, cct in ipairs(cct_list) do
+        local name = string.format("%dK", cct)
+        local idx = find_color_preset_by_name(name)
+        if idx then
+            local backup_name = string.format("%dK (backup)", cct)
+            if not find_color_preset_by_name(backup_name) then
+                pcall(function()
+                    Cmd(string.format("At Preset 4.%d", idx))
+                    call_color_only_filter()
+                    enable_all_color_attributes()
+                    local backup_idx = find_next_empty_preset_slot(4, 1)
+                    Cmd(string.format(
+                        'Store Preset 4.%d "%s" /AllForSelected /nc',
+                        backup_idx, backup_name:gsub('"', '\\"')))
+                    restore_default_at_filter()
+                end)
+                Echo(string.format(
+                    "Lighttune: backed up Preset 4.%d \"%s\" before session", idx, name))
+            end
+        end
+    end
+end
+
+local function show_session_abort_summary(display, stats)
+    stats = stats or {}
+    local partial = stats.partial_preset and "  Partial Kelvin preset saved: yes\n" or ""
+    MessageBox({
+        title   = "Session Aborted",
+        message = string.format(
+            "Partial work was saved:\n\n"
+            .. "  CAL fixtures: %d\n"
+            .. "  UNCAL fixtures: %d\n"
+            .. "  Fixture log entries this session: %d\n"
+            .. "%s\n"
+            .. "Desk color changes were not rolled back.",
+            stats.cal_count or 0,
+            stats.uncal_count or 0,
+            stats.fixture_log_added or 0,
+            partial),
+        display_handle = display,
+        buttons = {"OK"},
+    })
+end
+
 -- 1-based Groups pool index for an exact group name (e.g. "CAL", "UNCAL").
 local function group_pool_index(group_name)
     if not group_name or group_name == "" then return nil end
@@ -2391,6 +2459,9 @@ local function apply_calibration_correction(correction, caps, prev_channels)
     local methods = {}
     local errors  = {}
     local native_applied = false
+    local close_enough = color_math.should_use_setcolor_xy(correction, caps)
+    local use_native = caps and has_native_color_channels(caps) and not close_enough
+    local use_setcolor = not caps or not has_native_color_channels(caps) or close_enough
 
     local function try_attr(attr, val)
         if not attr then return false end
@@ -2415,7 +2486,7 @@ local function apply_calibration_correction(correction, caps, prev_channels)
         return ok
     end
 
-    if caps then
+    if caps and use_native then
         if caps.has_ctc and ch.ctc_changed and ch.ctc_kelvin then
             try_attr(caps.ctc_attr or "CTC", ch.ctc_kelvin)
         end
@@ -2433,8 +2504,7 @@ local function apply_calibration_correction(correction, caps, prev_channels)
         end
     end
 
-    local use_setcolor = not has_native_color_channels(caps) or not native_applied
-    if use_setcolor then
+    if use_setcolor and (close_enough or not has_native_color_channels(caps) or not native_applied) then
         local xy_ok, xy_err = pcall(function()
             SetColor("xyY", correction.target_x, correction.target_y, 1.0, 1.0, 1.0, false)
         end)
@@ -2865,7 +2935,7 @@ end
 -- After operator confirms: color preset + CAL or UNCAL fixture group.
 local function finalize_fixture_save(display, ctx, measured, goals, fnum, group, attempt,
     passed, reason, kelvin_preset, cal_group, uncal_group, preset_snapshot, bridge_active, config,
-    measure_only)
+    measure_only, session_stats)
     show_fixture_save_popup(display, ctx, measured, goals, attempt, passed, reason,
         bridge_active, config, measure_only)
 
@@ -2878,6 +2948,14 @@ local function finalize_fixture_save(display, ctx, measured, goals, fnum, group,
     local tracker = passed and cal_group or uncal_group
     local group_name = passed and "CAL" or "UNCAL"
     save_fixture_to_tracker_group(display, tracker, group_name, fnum)
+
+    if session_stats then
+        if passed then
+            session_stats.cal_count = (session_stats.cal_count or 0) + 1
+        else
+            session_stats.uncal_count = (session_stats.uncal_count or 0) + 1
+        end
+    end
 end
 
 -- Legacy whole-selection store (cancel fallback when no incremental preset yet).
@@ -2994,7 +3072,9 @@ local function run_calibration_target(display, state, params)
     local prev_channels = { tint = 50, cto = 0, ctb = 0, ctc_kelvin = nil }
     if caps and caps.tint_neutral then prev_channels.tint = caps.tint_neutral end
     if caps and caps.gdtf_cct then prev_channels.ctc_kelvin = caps.gdtf_cct end
+    local correction_opts = {}
     local stagnation = { best_score = nil, stagnant_count = 0 }
+    local session_stats = params.session_stats
     local measured_out, correction_out = nil, nil
     local applied         = false
     local cancelled       = false
@@ -3051,7 +3131,7 @@ local function run_calibration_target(display, state, params)
             1, passed,
             passed and nil or "did not meet goals (no color correction available)",
             kelvin_preset, cal_group, uncal_group, preset_snapshot,
-            bridge_active, config, true)
+            bridge_active, config, true, session_stats)
         solo_selection_off(fnum)
         return {
             measured   = measured,
@@ -3068,6 +3148,15 @@ local function run_calibration_target(display, state, params)
         local measured
 
         if bridge_active then
+            if attempt > 1 then
+                local settle = config and config.bridge_settle_sec or 0
+                if settle > 0 then
+                    Echo(string.format(
+                        "Lighttune [%s] waiting %ds for fixture to settle…",
+                        fixture_context_title(ctx, label), settle))
+                    yield_seconds(settle)
+                end
+            end
             if attempt > 1 and last_apply_info then
                 ok_or_auto_continue(display,
                     fixture_context_title(ctx,
@@ -3101,7 +3190,21 @@ local function run_calibration_target(display, state, params)
             solo_selection_off(fnum)
             select_group(group)
             autosave_color_preset(display, preset_snapshot, kelvin_preset, { partial = true })
-            state.session_abort = true
+            if params.session_stats then
+                params.session_stats.partial_preset = true
+            end
+            local choice = MessageBox({
+                title   = "Measurement Cancelled",
+                message = with_fixture_context(ctx,
+                    "Skip this fixture and continue the session,\n"
+                    .. "or abort the entire calibration session?\n\n"
+                    .. "Partial preset data is saved either way."),
+                display_handle = display,
+                buttons = {"Skip Fixture", "Abort Session"},
+            })
+            if choice == 2 then
+                state.session_abort = true
+            end
             break
         end
         mark_preset_data(preset_snapshot, goals.cct, group)
@@ -3119,7 +3222,7 @@ local function run_calibration_target(display, state, params)
         if goals_met(measured, goals) then
             finalize_fixture_save(display, ctx, measured, goals, fnum, group,
                 attempt, true, nil, kelvin_preset, cal_group, uncal_group,
-                preset_snapshot, bridge_active, config)
+                preset_snapshot, bridge_active, config, false, session_stats)
             finalized = true
             break
         end
@@ -3128,7 +3231,13 @@ local function run_calibration_target(display, state, params)
         stagnation = update_stagnation(stagnation, measured, score)
 
         local correction = color_math.get_correction(
-            goals.cct, goals.duv, measured.cct, measured.duv, prev_x, prev_y)
+            goals.cct, goals.duv, measured.cct, measured.duv,
+            prev_x, prev_y, correction_opts)
+        correction_opts = {
+            prev_delta_cct = correction.delta_cct,
+            prev_delta_duv = correction.delta_duv,
+            prev_error_mag = correction.error_mag,
+        }
         correction_out = correction
 
         if is_stagnated(stagnation, MAX_STAGNANT) then
@@ -3190,6 +3299,10 @@ local function run_calibration_target(display, state, params)
                     if detail ~= "" then
                         echo_lighttune_block("Correction detail", detail)
                     end
+                    pcall(function()
+                        bridge_client.notify_plant_correction(
+                            config, correction.target_x, correction.target_y)
+                    end)
                 end
             else
                 show_result(display, false, ctx, result.method, result.error_msg)
@@ -3277,14 +3390,64 @@ local function get_data_dir()
     return dir .. get_sep() .. "data"
 end
 
--- Read config.json. Returns config table or nil.
+-- Read config.json. Returns config table and warning strings.
 -- Supported fields: github_username, bridge_ip, bridge_port, bridge_api_key,
--- focus_preset, open_bridge_browser, bridge_auto_continue_sec.
+-- focus_preset, open_bridge_browser, bridge_auto_continue_sec, bridge_settle_sec.
+local function validate_config(config, file_exists)
+    config = config or {}
+    local warnings = {}
+
+    if not file_exists then
+        warnings[#warnings + 1] =
+            "config.json not found — bridge and GitHub username use defaults"
+    end
+
+    if config.github_username == "your_github_username" then
+        config.github_username = nil
+    end
+
+    if config.bridge_ip and config.bridge_ip ~= "" then
+        local ip = config.bridge_ip
+        if not ip:match("^[%d%.]+$")
+           and not ip:match("^[%a%d%-%.]+$")
+           and ip ~= "localhost" then
+            warnings[#warnings + 1] =
+                "bridge_ip looks unusual: " .. tostring(ip)
+        end
+    end
+
+    local port = tonumber(config.bridge_port) or 8765
+    if port < 1 or port > 65535 then
+        warnings[#warnings + 1] = "bridge_port out of range — using 8765"
+        port = 8765
+    end
+    config.bridge_port = port
+
+    local auto_continue = tonumber(config.bridge_auto_continue_sec)
+    if auto_continue == nil then
+        config.bridge_auto_continue_sec = BRIDGE_AUTO_CONTINUE_SEC
+    else
+        config.bridge_auto_continue_sec = math.max(0, math.min(auto_continue, 60))
+    end
+
+    local settle = tonumber(config.bridge_settle_sec)
+    if settle == nil then
+        config.bridge_settle_sec = 3
+    else
+        config.bridge_settle_sec = math.max(0, math.min(settle, 30))
+    end
+
+    config.open_bridge_browser = config.open_bridge_browser == true
+
+    return config, warnings
+end
+
 local function load_config()
     local dir = get_plugin_dir()
-    if not dir then return nil end
+    if not dir then return validate_config({}, false) end
     local path = dir .. get_sep() .. "config.json"
-    local f = io.open(path, "r"); if not f then return nil end
+    local f = io.open(path, "r")
+    if not f then return validate_config({}, false) end
     local content = f:read("*a"); f:close()
     local username       = content:match('"github_username"%s*:%s*"([^"]+)"')
     local bridge_ip      = content:match('"bridge_ip"%s*:%s*"([^"]+)"')
@@ -3293,15 +3456,17 @@ local function load_config()
     local focus_preset   = content:match('"focus_preset"%s*:%s*"([^"]*)"')
     local open_browser   = content:match('"open_bridge_browser"%s*:%s*(%a+)')
     local auto_continue  = tonumber(content:match('"bridge_auto_continue_sec"%s*:%s*(%d+)'))
-    return {
-        github_username         = username,
-        bridge_ip               = bridge_ip,
-        bridge_port             = bridge_port or 8765,
-        bridge_api_key          = bridge_api_key,
-        focus_preset            = focus_preset,
-        open_bridge_browser     = (open_browser == "true"),
+    local settle_sec     = tonumber(content:match('"bridge_settle_sec"%s*:%s*(%d+)'))
+    return validate_config({
+        github_username          = username,
+        bridge_ip                = bridge_ip,
+        bridge_port              = bridge_port or 8765,
+        bridge_api_key           = bridge_api_key,
+        focus_preset             = focus_preset,
+        open_bridge_browser      = (open_browser == "true"),
         bridge_auto_continue_sec = auto_continue,
-    }
+        bridge_settle_sec        = settle_sec,
+    }, true)
 end
 
 local function github_username_valid(username)
@@ -3451,6 +3616,25 @@ end
 bridge_configured = function(config)
     return config and config.bridge_ip and config.bridge_ip ~= ""
 end
+-- Atomic write: temp file then rename (best-effort on all platforms).
+local function atomic_write_file(path, content)
+    local tmp = path .. ".tmp"
+    local wf = io.open(tmp, "w")
+    if not wf then return false, "open_failed" end
+    wf:write(content)
+    wf:close()
+    if os.rename then
+        local ok = os.rename(tmp, path)
+        if ok then return true end
+    end
+    local rf = io.open(path, "w")
+    if not rf then return false, "replace_failed" end
+    rf:write(content)
+    rf:close()
+    pcall(function() os.remove(tmp) end)
+    return true
+end
+
 -- The data/ directory must exist (part of plugin installation).
 local function save_fixture_log_local(db_entry)
     local ok = pcall(function()
@@ -3461,8 +3645,8 @@ local function save_fixture_log_local(db_entry)
         if rf then records = select(1, fixture_db.json_parse_db_array(rf:read("*a"))); rf:close() end
         fixture_db.append_fixture_record(records, db_entry)
         fixture_db.sort_fixture_records(records)
-        local wf = io.open(path, "w")
-        if wf then wf:write(fixture_db.json_encode_db_array(records)); wf:close() end
+        local written, werr = atomic_write_file(path, fixture_db.json_encode_db_array(records))
+        if not written then error(tostring(werr or "write_failed")) end
     end)
     return ok
 end
@@ -3525,9 +3709,11 @@ end
 -- Community upload to GitHub is not available in GrandMA3 Lua (requires HTTPS;
 -- only lua.ftp / plain FTP is documented). Export fixture_log.json manually
 -- to share data with the community.
-local function log_fixture_data(display, db_entry, config)
+local function log_fixture_data(display, db_entry, config, session_stats)
     if not db_entry.make or not db_entry.model then return end
-    save_fixture_log_local(db_entry)
+    if save_fixture_log_local(db_entry) and session_stats then
+        session_stats.fixture_log_added = (session_stats.fixture_log_added or 0) + 1
+    end
     sync_fixture_log_to_bridge(config)
 end
 
@@ -3546,7 +3732,7 @@ function Main(display, ...)
 
     local ok, err = pcall(function()
 
-        local config = load_config() or {}
+        local config, config_warnings = load_config()
 
         -- ── Main menu ─────────────────────────────────────────────────────
         local menu
@@ -3595,6 +3781,10 @@ function Main(display, ...)
 
         config.github_username = resolve_github_username(display, config)
 
+        for _, w in ipairs(config_warnings or {}) do
+            Echo("Lighttune config: " .. tostring(w))
+        end
+
         -- ── Session goals (now: one or more Kelvin targets) ────────────────
         local bridge_meter, bridge_meter_name = resolve_meter_from_bridge(config)
         local goals_base = get_session_goals(display, config, bridge_meter)
@@ -3623,6 +3813,8 @@ function Main(display, ...)
 
         local group_list = get_group_list_input(display)
         if not group_list then return end
+        if not validate_group_list(display, group_list) then return end
+        backup_session_presets(display, goals_base.cct_list)
 
         local kelvin_str = table.concat(goals_base.cct_list, ",")
         local group_str = table.concat(group_list, ",")
@@ -3646,6 +3838,12 @@ function Main(display, ...)
         end
 
         local session_abort = false
+        local session_stats = {
+            cal_count = 0,
+            uncal_count = 0,
+            fixture_log_added = 0,
+            partial_preset = false,
+        }
         local cal_group   = init_named_group_tracker("CAL")
         local uncal_group = init_named_group_tracker("UNCAL")
         if cal_group.created then
@@ -3748,7 +3946,7 @@ function Main(display, ...)
                 local group_solo_attempts   = 0
                 local group_attempts_total  = 0
                 local group_cancelled       = false
-                local cal_state = { bridge_active = bridge_active, session_abort = false }
+                local cal_state = { bridge_active = bridge_active, session_abort = false, stats = session_stats }
 
                 -- Phase 1: entire group
                 if #fixture_nums > 0 then
@@ -3776,6 +3974,7 @@ function Main(display, ...)
                     focus_preset = focus_preset,
                     kelvin_preset = kelvin_preset, cal_group = cal_group,
                     uncal_group = uncal_group, preset_snapshot = preset_snapshot,
+                    session_stats = session_stats,
                 })
 
                 bridge_active = cal_state.bridge_active
@@ -3839,6 +4038,7 @@ function Main(display, ...)
                                 focus_preset = focus_preset,
                                 kelvin_preset = kelvin_preset, cal_group = cal_group,
                                 uncal_group = uncal_group, preset_snapshot = preset_snapshot,
+                                session_stats = session_stats,
                             })
 
                             bridge_active = cal_state.bridge_active
@@ -3875,7 +4075,7 @@ function Main(display, ...)
                         r9          = group_last_measured.r9,
                         tlci        = group_last_measured.tlci,
                     }
-                    log_fixture_data(display, db_entry, config)
+                    log_fixture_data(display, db_entry, config, session_stats)
                     if fixture_make and fixture_model then
                         fixture_db.append_fixture_record(fixture_records, db_entry)
                     end
@@ -3903,6 +4103,10 @@ function Main(display, ...)
                 mark_preset_data(preset_snapshot, goals.cct, preset_snapshot.group)
                 autosave_color_preset(display, preset_snapshot, kelvin_preset, { quiet = true })
             end
+        end
+
+        if session_abort then
+            show_session_abort_summary(display, session_stats)
         end
 
         sync_fixture_log_to_bridge(config)
